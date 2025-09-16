@@ -444,7 +444,17 @@ def position_snapshot(positions_df, last_close_row):
     for _, r in positions_df.iterrows():
         sym = r["symbol"]; sh = int(r["shares"]); avg = float(r["avg_cost"])
         if isinstance(last_close_row, (pd.Series, pd.DataFrame)):
-            px = float(last_close_row.get(sym, np.nan)) if sym in last_close_row.index else np.nan
+            # Try direct match, otherwise try with .NS suffix
+            if isinstance(last_close_row, (pd.Series, pd.DataFrame)):
+                if sym in last_close_row.index:
+                    px = float(last_close_row.get(sym, np.nan))
+                elif (sym + ".NS") in last_close_row.index:
+                    px = float(last_close_row.get(sym + ".NS", np.nan))
+                else:
+                    px = np.nan
+            else:
+                px = np.nan
+
         elif isinstance(last_close_row, (int, float, np.floating)):
     # If it's just a scalar, can't map per-symbol prices → mark as NaN
             px = np.nan
@@ -1003,6 +1013,7 @@ with tab2:
         st.download_button("Download equity_series.csv", data=deq[["date","equity"]].to_csv(index=False), file_name="equity_series.csv", mime="text/csv")
     else:
         st.info("No daily equity yet. Execute a trade or add funds to start the series.")
+
 
 
 
