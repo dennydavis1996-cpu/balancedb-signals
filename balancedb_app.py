@@ -749,9 +749,9 @@ if universe:
     today = now_ist().date()
     # If market still open, we backfill only up to previous trading day
     if not mkt["bench"].empty:
-        cutoff = mkt["bench"].index[-1].date()
-    else:
-        cutoff = now_ist().date()
+    cutoff = mkt["bench"].index[-1].date()
+else:
+    cutoff = now_ist().date()
     df_new = reconstruct_daily_equity(ledger, balances, start_day, cutoff, px_hist, cfg["fee"])
     if not df_new.empty:
         save_df(sh, "daily_equity", df_new)
@@ -975,4 +975,3 @@ else:
         st.download_button("Download equity_series.csv", data=deq[["date","equity"]].to_csv(index=False), file_name="equity_series.csv", mime="text/csv")
     else:
         st.info("No daily equity yet. Execute a trade or add funds to start the series.")
-
