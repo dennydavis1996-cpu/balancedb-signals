@@ -65,7 +65,7 @@ DEFAULTS = dict(
     fee=0.0011,  # 0.11% per side
     index_name="NIFTY100",
     ma=20,
-    use_zscore=False,
+    use_zscore=True,
     bottom_n=16,
     max_new_buys=3,
     avg_dd=0.035,
@@ -1056,6 +1056,7 @@ with tab2:
         st.download_button("Download equity_series.csv", data=deq[["date","equity"]].to_csv(index=False), file_name="equity_series.csv", mime="text/csv")
     else:
         st.info("No daily equity yet. Execute a trade or add funds to start the series.")
+
 
 
 
