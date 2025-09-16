@@ -201,6 +201,37 @@ def yf_intraday_last(tickers):
 
     return out
 
+    # Fallback if intraday gave nothing
+    if not out:
+        try:
+            data = safe_yf_download(batch, period="5d", interval="1d", progress=False, threads=True)
+        except Exception:
+            data = None
+
+        if data is not None and isinstance(data, pd.DataFrame) and not data.empty:
+            if isinstance(data.columns, pd.MultiIndex):
+                close = data.get("Close")
+                if close is not None and not close.empty:
+                    last = close.dropna(how="all").tail(1).T.squeeze()
+            else:
+                if "Close" in data.columns:
+                    last = data["Close"].dropna().tail(1).T.squeeze()
+                else:
+                    last = None
+
+            if last is not None:
+                if isinstance(last, pd.Series):
+                    for sym, px in last.items():
+                        if pd.notna(px):
+                            out[sym] = float(px)
+                elif isinstance(last, (int, float, np.floating)):
+                    sym = batch[0] if len(batch) == 1 else None
+                    if sym:
+                        out[sym] = float(last)
+
+    return out
+
+
 def download_fields(tickers, start, end, fields=("Adj Close","Volume"), chunk=50):
     tickers = list(dict.fromkeys([t for t in tickers if isinstance(t, str)]))
     out = {f: [] for f in fields}
@@ -1025,6 +1056,7 @@ with tab2:
         st.download_button("Download equity_series.csv", data=deq[["date","equity"]].to_csv(index=False), file_name="equity_series.csv", mime="text/csv")
     else:
         st.info("No daily equity yet. Execute a trade or add funds to start the series.")
+
 
 
 
