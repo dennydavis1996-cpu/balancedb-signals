@@ -94,7 +94,7 @@ def now_ist():
 def is_weekday(d):
     return d.weekday() < 5
 
-def is_time_between(t, start_hm=(9,15), end_hm=(15,30)):
+def is_time_between(t, start_hm=(0,0), end_hm=(23,59)):
     sh, sm = start_hm; eh, em = end_hm
     return (t.hour, t.minute) >= (sh, sm) and (t.hour, t.minute) <= (eh, em)
 
@@ -102,7 +102,7 @@ def is_market_open():
     """Best-effort: weekday + time-window; optionally ping NSE marketStatus."""
     t = now_ist()
     if not is_weekday(t): return False, "Weekend"
-    if not is_time_between(t.time() if hasattr(t, "time") else t, (9,15), (15,30)):
+    if not is_time_between(t.time() if hasattr(t, "time") else t, (0,0), (23,59)):
         return False, "Outside trading hours (IST 09:15–15:30)"
     # Optional NSE status check (fallback-friendly)
     try:
@@ -1013,6 +1013,7 @@ with tab2:
         st.download_button("Download equity_series.csv", data=deq[["date","equity"]].to_csv(index=False), file_name="equity_series.csv", mime="text/csv")
     else:
         st.info("No daily equity yet. Execute a trade or add funds to start the series.")
+
 
 
 
