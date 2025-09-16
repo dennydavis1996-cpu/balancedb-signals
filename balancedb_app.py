@@ -878,9 +878,9 @@ with tab2:
     st.subheader("My Portfolio")
     # Last close valuation snapshot
     if not mkt["prices"].empty:
-    last_close = mkt["prices"].iloc[-1]
-else:
-    last_close = float("nan")
+        last_close = mkt["prices"].iloc[-1]
+    else:
+        last_close = float("nan")
     holdings_df, mv = position_snapshot(positions, last_close)
     cash = float(balances.iloc[0]["cash"]) if not balances.empty else DEFAULTS["base_capital"]
     equity_close = cash + mv
@@ -975,4 +975,5 @@ else:
         st.download_button("Download equity_series.csv", data=deq[["date","equity"]].to_csv(index=False), file_name="equity_series.csv", mime="text/csv")
     else:
         st.info("No daily equity yet. Execute a trade or add funds to start the series.")
+
 
