@@ -164,29 +164,41 @@ def yf_intraday_last(tickers):
     """Get last 1m price for a list (chunks). Returns dict ticker->price."""
     out = {}
     tickers = list(dict.fromkeys(tickers))
-    if not tickers: return out
+    if not tickers:
+        return out
+
     for i in range(0, len(tickers), 40):
         batch = tickers[i:i+40]
         try:
             data = safe_yf_download(batch, period="1d", interval="1m", progress=False, threads=True)
         except Exception:
             data = None
-        if data is None or not isinstance(data, pd.DataFrame): continue
+
+        if data is None or not isinstance(data, pd.DataFrame) or data.empty:
+            continue
+
         if isinstance(data.columns, pd.MultiIndex):
             # pick Close
             close = data.get("Close")
-            if close is None: continue
+            if close is None or close.empty:
+                continue
             last = close.dropna(how="all").ffill().tail(1).T.squeeze()
-            for sym, px in last.items():
-                if pd.notna(px): out[sym] = float(px)
         else:
+            if "Close" not in data.columns:
+                continue
             last = data["Close"].dropna().tail(1).T.squeeze()
-            if isinstance(last, pd.Series):
-                for sym, px in last.items():
-                    if pd.notna(px): out[sym] = float(px)
-            else:
-                # single ticker Series
-                out[batch[0]] = float(last)
+
+        # Now handle both Series and scalar cases
+        if isinstance(last, pd.Series):
+            for sym, px in last.items():
+                if pd.notna(px):
+                    out[sym] = float(px)
+        elif isinstance(last, (int, float, np.floating)):
+            # Single ticker case → map directly
+            sym = batch[0] if len(batch) == 1 else None
+            if sym:
+                out[sym] = float(last)
+
     return out
 
 def download_fields(tickers, start, end, fields=("Adj Close","Volume"), chunk=50):
@@ -1013,6 +1025,7 @@ with tab2:
         st.download_button("Download equity_series.csv", data=deq[["date","equity"]].to_csv(index=False), file_name="equity_series.csv", mime="text/csv")
     else:
         st.info("No daily equity yet. Execute a trade or add funds to start the series.")
+
 
 
 
