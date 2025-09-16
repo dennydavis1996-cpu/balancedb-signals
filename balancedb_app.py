@@ -28,7 +28,18 @@ import matplotlib.pyplot as plt
 
 def safe_yf_download(tickers, **kwargs):
     try:
-        df = yf.download(tickers, auto_adjust=False, **kwargs)
+        df = yf.download(tickers, **kwargs)
+        if df is None or not isinstance(df, pd.DataFrame) or df.empty:
+            return pd.DataFrame()
+        return df
+    except Exception as e:
+        try:
+            import streamlit as st
+            st.warning(f"Yahoo download failed for {tickers}: {e}")
+        except Exception:
+            print(f"Yahoo download failed for {tickers}: {e}")
+        return pd.DataFrame()
+        df = safe_yf_download(tickers, progress=False, **kwargs)
         if df is None or not isinstance(df, pd.DataFrame) or df.empty:
             return pd.DataFrame()
         return df
@@ -157,7 +168,7 @@ def yf_intraday_last(tickers):
     for i in range(0, len(tickers), 40):
         batch = tickers[i:i+40]
         try:
-            data = safe_yf_download(batch, period="1d", interval="1m", progress=False, auto_adjust=False, threads=True)
+            data = safe_yf_download(batch, period="1d", interval="1m", progress=False, threads=True)
         except Exception:
             data = None
         if data is None or not isinstance(data, pd.DataFrame): continue
@@ -183,7 +194,7 @@ def download_fields(tickers, start, end, fields=("Adj Close","Volume"), chunk=50
     out = {f: [] for f in fields}
     for i in range(0, len(tickers), chunk):
         t = tickers[i:i+chunk]
-        data = safe_yf_download(t, start=start, end=end, progress=False, auto_adjust=False, threads=True)
+        data = safe_yf_download(t, start=start, end=end, progress=False, threads=True)
         if not isinstance(data, pd.DataFrame): continue
         if isinstance(data.columns, pd.MultiIndex):
             for f in fields:
@@ -212,22 +223,8 @@ def load_market_data(lookback_days=420):
     end   = (today + timedelta(days=2)).strftime("%Y-%m-%d")
     tickers = fetch_nifty100_symbols()
     # Benchmark (NIFTY50 price index)
-    b = safe_yf_download("^NSEI", start=start, end=end, progress=False, auto_adjust=False)
-    if not b.empty:
-        if "Adj Close" in b:
-            series = b["Adj Close"]
-        elif "Close" in b:
-            series = b["Close"]
-        else:
-            series = pd.Series(dtype=float)
-
-        if isinstance(series, pd.DataFrame):
-            series = series.squeeze("columns")
-
-        bench = series.dropna().rename("NIFTY50")
-    else:
-        bench = pd.Series(dtype=float, name="NIFTY50")
-
+    b = safe_yf_download("^NSEI", start=start, end=end, progress=False, )
+    bench = (b["Adj Close"] if "Adj Close" in b else b["Close"]).dropna().rename("NIFTY50")
     fields = download_fields(tickers, start, end, fields=("Adj Close","Volume"))
     prices = fields["Adj Close"].reindex(bench.index).ffill()
     vols   = fields["Volume"].reindex(bench.index).ffill()
@@ -244,7 +241,7 @@ def fetch_nifty100_tri():
     # Try Yahoo NIFTY100 price index first (stable)
     tri = None; label = "NIFTY100 (price index, fallback — TRI unavailable)"
     try:
-        y = safe_yf_download("^CNX100", period="max", interval="1d", progress=False, auto_adjust=False)
+        y = safe_yf_download("^CNX100", period="max", interval="1d", progress=False, )
         ser = (y["Adj Close"] if "Adj Close" in y else y["Close"]).dropna()
         tri = ser.rename(label)
     except Exception:
@@ -752,12 +749,10 @@ if universe:
     today = now_ist().date()
     # If market still open, we backfill only up to previous trading day
     if not mkt["bench"].empty:
-        cutoff = mkt["bench"].index[-1].date()
-    else:
-        cutoff = now_ist().date()
-
+    cutoff = mkt["bench"].index[-1].date()
+else:
+    cutoff = now_ist().date()
     df_new = reconstruct_daily_equity(ledger, balances, start_day, cutoff, px_hist, cfg["fee"])
-
     if not df_new.empty:
         save_df(sh, "daily_equity", df_new)
         daily_eq = df_new.copy()
@@ -882,7 +877,10 @@ with tab1:
 with tab2:
     st.subheader("My Portfolio")
     # Last close valuation snapshot
+    if not mkt["prices"].empty:
     last_close = mkt["prices"].iloc[-1]
+else:
+    last_close = float("nan")
     holdings_df, mv = position_snapshot(positions, last_close)
     cash = float(balances.iloc[0]["cash"]) if not balances.empty else DEFAULTS["base_capital"]
     equity_close = cash + mv
@@ -977,5 +975,3 @@ with tab2:
         st.download_button("Download equity_series.csv", data=deq[["date","equity"]].to_csv(index=False), file_name="equity_series.csv", mime="text/csv")
     else:
         st.info("No daily equity yet. Execute a trade or add funds to start the series.")
-
-
