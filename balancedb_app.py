@@ -26,6 +26,21 @@ import streamlit as st
 import yfinance as yf
 import matplotlib.pyplot as plt
 
+def safe_yf_download(tickers, **kwargs):
+    try:
+        df = safe_yf_download(tickers, progress=False, auto_adjust=False, **kwargs)
+        if df is None or not isinstance(df, pd.DataFrame) or df.empty:
+            return pd.DataFrame()
+        return df
+    except Exception as e:
+        try:
+            import streamlit as st
+            st.warning(f"Yahoo download failed for {tickers}: {e}")
+        except Exception:
+            print(f"Yahoo download failed for {tickers}: {e}")
+        return pd.DataFrame()
+
+
 # Google Sheets
 import gspread
 from google.oauth2.service_account import Credentials
@@ -142,7 +157,7 @@ def yf_intraday_last(tickers):
     for i in range(0, len(tickers), 40):
         batch = tickers[i:i+40]
         try:
-            data = yf.download(batch, period="1d", interval="1m", progress=False, auto_adjust=False, threads=True)
+            data = safe_yf_download(batch, period="1d", interval="1m", progress=False, auto_adjust=False, threads=True)
         except Exception:
             data = None
         if data is None or not isinstance(data, pd.DataFrame): continue
@@ -168,7 +183,7 @@ def download_fields(tickers, start, end, fields=("Adj Close","Volume"), chunk=50
     out = {f: [] for f in fields}
     for i in range(0, len(tickers), chunk):
         t = tickers[i:i+chunk]
-        data = yf.download(t, start=start, end=end, progress=False, auto_adjust=False, threads=True)
+        data = safe_yf_download(t, start=start, end=end, progress=False, auto_adjust=False, threads=True)
         if not isinstance(data, pd.DataFrame): continue
         if isinstance(data.columns, pd.MultiIndex):
             for f in fields:
@@ -197,7 +212,7 @@ def load_market_data(lookback_days=420):
     end   = (today + timedelta(days=2)).strftime("%Y-%m-%d")
     tickers = fetch_nifty100_symbols()
     # Benchmark (NIFTY50 price index)
-    b = yf.download("^NSEI", start=start, end=end, progress=False, auto_adjust=False)
+    b = safe_yf_download("^NSEI", start=start, end=end, progress=False, auto_adjust=False)
     bench = (b["Adj Close"] if "Adj Close" in b else b["Close"]).dropna().rename("NIFTY50")
     fields = download_fields(tickers, start, end, fields=("Adj Close","Volume"))
     prices = fields["Adj Close"].reindex(bench.index).ffill()
@@ -215,7 +230,7 @@ def fetch_nifty100_tri():
     # Try Yahoo NIFTY100 price index first (stable)
     tri = None; label = "NIFTY100 (price index, fallback — TRI unavailable)"
     try:
-        y = yf.download("^CNX100", period="max", interval="1d", progress=False, auto_adjust=False)
+        y = safe_yf_download("^CNX100", period="max", interval="1d", progress=False, auto_adjust=False)
         ser = (y["Adj Close"] if "Adj Close" in y else y["Close"]).dropna()
         tri = ser.rename(label)
     except Exception:
@@ -722,15 +737,8 @@ if universe:
     start_day = min(first_needed, now_ist().date()) if first_needed else now_ist().date()
     today = now_ist().date()
     # If market still open, we backfill only up to previous trading day
-    if not mkt["bench"].empty:
-        cutoff = mkt["bench"].index[-1].date()
-        df_new = reconstruct_daily_equity(ledger, balances, start_day, cutoff, px_hist, cfg["fee"])
-        if not df_new.empty:
-            save_df(sh, "daily_equity", df_new)
-            daily_eq = df_new.copy()
-    else:
-        st.warning("Benchmark data (NIFTY50) not available — backfill skipped.")
-
+    cutoff = mkt["bench"].index[-1].date()
+    df_new = reconstruct_daily_equity(ledger, balances, start_day, cutoff, px_hist, cfg["fee"])
     if not df_new.empty:
         save_df(sh, "daily_equity", df_new)
         daily_eq = df_new.copy()
@@ -949,5 +957,4 @@ with tab2:
         st.download_button("Download daily_summary.csv", data=j.to_csv(index=False), file_name="daily_summary.csv", mime="text/csv")
         st.download_button("Download equity_series.csv", data=deq[["date","equity"]].to_csv(index=False), file_name="equity_series.csv", mime="text/csv")
     else:
-
         st.info("No daily equity yet. Execute a trade or add funds to start the series.")
