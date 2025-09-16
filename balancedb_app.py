@@ -452,7 +452,7 @@ def position_snapshot(positions_df, last_close_row):
             if sym_up in symbols_available:
                 px = float(last_close_row[symbols_available[sym_up]])
             elif (sym_up + ".NS") in symbols_available:
-                px = float(last_close_row[symbols_available[sym_up + ".NS")])
+                px = float(last_close_row[symbols_available[sym_up + ".NS"]])
         elif isinstance(last_close_row, pd.DataFrame):
             # Rare case: take first value from DataFrame row
             px = float(last_close_row.iloc[0]) if not last_close_row.empty else np.nan
@@ -1013,6 +1013,7 @@ with tab2:
         st.download_button("Download equity_series.csv", data=deq[["date","equity"]].to_csv(index=False), file_name="equity_series.csv", mime="text/csv")
     else:
         st.info("No daily equity yet. Execute a trade or add funds to start the series.")
+
 
 
 
