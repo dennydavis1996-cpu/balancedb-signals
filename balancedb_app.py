@@ -443,23 +443,23 @@ def position_snapshot(positions_df, last_close_row):
         return pd.DataFrame(columns=["symbol","shares","avg_cost","last_price","market_value","unrealized_pnl","unrealized_pct"]), 0.0
     for _, r in positions_df.iterrows():
         sym = r["symbol"]; sh = int(r["shares"]); avg = float(r["avg_cost"])
-        if isinstance(last_close_row, (pd.Series, pd.DataFrame)):
-            # Try direct match, otherwise try with .NS suffix
-            if isinstance(last_close_row, (pd.Series, pd.DataFrame)):
-                if sym in last_close_row.index:
-                    px = float(last_close_row.get(sym, np.nan))
-                elif (sym + ".NS") in last_close_row.index:
-                    px = float(last_close_row.get(sym + ".NS", np.nan))
-                else:
-                    px = np.nan
-            else:
-                px = np.nan
+        px = np.nan
+        if isinstance(last_close_row, pd.Series):
+            # Normalize all index names to uppercase
+            symbols_available = {s.upper(): s for s in last_close_row.index}
+            sym_up = sym.upper()
 
+            if sym_up in symbols_available:
+                px = float(last_close_row[symbols_available[sym_up]])
+            elif (sym_up + ".NS") in symbols_available:
+                px = float(last_close_row[symbols_available[sym_up + ".NS")])
+        elif isinstance(last_close_row, pd.DataFrame):
+            # Rare case: take first value from DataFrame row
+            px = float(last_close_row.iloc[0]) if not last_close_row.empty else np.nan
         elif isinstance(last_close_row, (int, float, np.floating)):
-    # If it's just a scalar, can't map per-symbol prices → mark as NaN
+            # If it's just a scalar, can’t map per-symbol prices
             px = np.nan
-        else:
-            px = np.nan
+
 
         if pd.isna(px): px=0.0
         mval = sh*px; mv += mval
@@ -1013,6 +1013,7 @@ with tab2:
         st.download_button("Download equity_series.csv", data=deq[["date","equity"]].to_csv(index=False), file_name="equity_series.csv", mime="text/csv")
     else:
         st.info("No daily equity yet. Execute a trade or add funds to start the series.")
+
 
 
 
