@@ -213,7 +213,21 @@ def load_market_data(lookback_days=420):
     tickers = fetch_nifty100_symbols()
     # Benchmark (NIFTY50 price index)
     b = safe_yf_download("^NSEI", start=start, end=end, progress=False, auto_adjust=False)
-    bench = (b["Adj Close"] if "Adj Close" in b else b["Close"]).dropna().rename("NIFTY50")
+    if not b.empty:
+        if "Adj Close" in b:
+            series = b["Adj Close"]
+        elif "Close" in b:
+            series = b["Close"]
+        else:
+            series = pd.Series(dtype=float)
+
+        if isinstance(series, pd.DataFrame):
+            series = series.squeeze("columns")
+
+        bench = series.dropna().rename("NIFTY50")
+    else:
+        bench = pd.Series(dtype=float, name="NIFTY50")
+
     fields = download_fields(tickers, start, end, fields=("Adj Close","Volume"))
     prices = fields["Adj Close"].reindex(bench.index).ffill()
     vols   = fields["Volume"].reindex(bench.index).ffill()
@@ -958,3 +972,4 @@ with tab2:
         st.download_button("Download equity_series.csv", data=deq[["date","equity"]].to_csv(index=False), file_name="equity_series.csv", mime="text/csv")
     else:
         st.info("No daily equity yet. Execute a trade or add funds to start the series.")
+
