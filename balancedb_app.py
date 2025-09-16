@@ -28,7 +28,7 @@ import matplotlib.pyplot as plt
 
 def safe_yf_download(tickers, **kwargs):
     try:
-        df = safe_yf_download(tickers, progress=False, auto_adjust=False, **kwargs)
+        df = yf.download(tickers, auto_adjust=False, **kwargs)
         if df is None or not isinstance(df, pd.DataFrame) or df.empty:
             return pd.DataFrame()
         return df
@@ -751,8 +751,13 @@ if universe:
     start_day = min(first_needed, now_ist().date()) if first_needed else now_ist().date()
     today = now_ist().date()
     # If market still open, we backfill only up to previous trading day
-    cutoff = mkt["bench"].index[-1].date()
+    if not mkt["bench"].empty:
+        cutoff = mkt["bench"].index[-1].date()
+    else:
+        cutoff = now_ist().date()
+
     df_new = reconstruct_daily_equity(ledger, balances, start_day, cutoff, px_hist, cfg["fee"])
+
     if not df_new.empty:
         save_df(sh, "daily_equity", df_new)
         daily_eq = df_new.copy()
@@ -972,4 +977,5 @@ with tab2:
         st.download_button("Download equity_series.csv", data=deq[["date","equity"]].to_csv(index=False), file_name="equity_series.csv", mime="text/csv")
     else:
         st.info("No daily equity yet. Execute a trade or add funds to start the series.")
+
 
