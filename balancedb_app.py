@@ -328,32 +328,38 @@ def reconstruct_daily_equity(ledger, balances, start_day, end_day, price_df, fee
     return pd.DataFrame(rows)
 # ----------------- Position snapshot -----------------
 def position_snapshot(positions_df, last_close_row):
-    rows=[]; mv=0.0
-    if positions_df is None or positions_df.empty:
+    rows = []
+    mv = 0.0
+    if positions_df is None or positions_df.empty or last_close_row is None or last_close_row.empty:
         return pd.DataFrame(columns=["symbol","shares","avg_cost","last_price",
                                      "market_value","unrealized_pnl","unrealized_pct"]), 0.0
+    
+    # Make a lookup dict with both raw and .NS forms for robustness
+    symbol_map = {s.upper(): float(px) for s, px in last_close_row.items()}
+    for sym in symbol_map.copy():
+        if not sym.endswith(".NS"):
+            symbol_map[sym+".NS"] = symbol_map[sym]
+        else:
+            base = sym.replace(".NS","")
+            symbol_map[base] = symbol_map[sym]
+
+    # Loop positions
     for _, r in positions_df.iterrows():
-        sym = r["symbol"]; sh = int(r["shares"]); avg = float(r["avg_cost"])
-        px = np.nan
-        if isinstance(last_close_row, pd.Series):
-            symbols_available = {s.upper(): s for s in last_close_row.index}
-            sym_up = sym.upper()
-            if sym_up in symbols_available:
-                px = float(last_close_row[symbols_available[sym_up]])
-            elif (sym_up + ".NS") in symbols_available:
-                px = float(last_close_row[symbols_available[sym_up + ".NS"]])
-        elif isinstance(last_close_row, pd.DataFrame):
-            px = float(last_close_row.iloc[0]) if not last_close_row.empty else np.nan
-        elif isinstance(last_close_row, (int, float, np.floating)):
-            px = np.nan
-        if pd.isna(px): px=0.0
-        mval = sh*px; mv += mval
-        unr = (px-avg)*sh
-        unr_pct = (px/avg - 1) if avg>0 else np.nan
-        rows.append(dict(symbol=sym, shares=sh, avg_cost=round(avg,2),
-                         last_price=round(px,2), market_value=round(mval,2),
-                         unrealized_pnl=round(unr,2),
-                         unrealized_pct=round((unr_pct or 0)*100,2)))
+        sym = str(r["symbol"]).upper()
+        sh = int(r["shares"])
+        avg = float(r["avg_cost"])
+        px = symbol_map.get(sym, 0.0)
+        mval = sh * px
+        mv += mval
+        unr = (px - avg) * sh
+        unr_pct = ((px/avg - 1) * 100) if avg > 0 else 0.0
+
+        rows.append(dict(
+            symbol=sym, shares=sh, avg_cost=round(avg,2),
+            last_price=round(px,2), market_value=round(mval,2),
+            unrealized_pnl=round(unr,2), unrealized_pct=round(unr_pct,2)
+        ))
+
     return pd.DataFrame(rows).sort_values("market_value", ascending=False), mv
 
 # ----------------- Compute Signals -----------------
@@ -736,7 +742,12 @@ with tab1:
 with tab2:
     st.subheader("My Portfolio")
     if not mkt["prices"].empty:
-        last_close_row=mkt["prices"].iloc[-1]
+		# Use live intraday last price
+		live_prices = yf.download(list(mkt["prices"].columns), period="1d", interval="1m", progress=False)
+		if not live_prices.empty and ("Close" in live_prices):
+    		last_close_row = live_prices["Close"].iloc[-1]
+		else:
+    		last_close_row = mkt["prices"].iloc[-1]
         if np.isscalar(last_close_row):
             col=mkt["prices"].columns[0]
             last_close_row=pd.Series({col:float(last_close_row)})
@@ -813,3 +824,4 @@ with tab2:
         st.download_button("Download equity_series.csv",data=deq[["date","equity"]].to_csv(index=False),file_name="equity_series.csv",mime="text/csv")
     else:
         st.info("No daily equity yet. Execute a trade or add funds to start the series.")
+
