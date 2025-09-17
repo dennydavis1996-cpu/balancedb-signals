@@ -741,18 +741,23 @@ with tab1:
 # --- Tab 2: My Portfolio ---
 with tab2:
     st.subheader("My Portfolio")
+
     if not mkt["prices"].empty:
-		# Use live intraday last price
-		live_prices = yf.download(list(mkt["prices"].columns), period="1d", interval="1m", progress=False)
-		if not live_prices.empty and ("Close" in live_prices):
-    		last_close_row = live_prices["Close"].iloc[-1]
-		else:
-    		last_close_row = mkt["prices"].iloc[-1]
+        # Try to fetch the latest intraday close (1‑minute interval)
+        live_prices = yf.download(list(mkt["prices"].columns), period="1d", interval="1m", progress=False)
+
+        if not live_prices.empty and ("Close" in live_prices):
+            last_close_row = live_prices["Close"].iloc[-1]
+        else:
+            # Fallback: use previous daily close from cache
+            last_close_row = mkt["prices"].iloc[-1]
+
+        # If only a single value (scalar), wrap in Series for consistency
         if np.isscalar(last_close_row):
-            col=mkt["prices"].columns[0]
-            last_close_row=pd.Series({col:float(last_close_row)})
+            col = mkt["prices"].columns[0]
+            last_close_row = pd.Series({col: float(last_close_row)})
     else:
-        last_close_row=pd.Series(dtype=float)
+        last_close_row = pd.Series(dtype=float)
 
     holdings_df,mv=position_snapshot(positions,last_close_row)
     cash=float(balances.iloc[0]["cash"]) if not balances.empty else DEFAULTS["base_capital"]
@@ -824,4 +829,5 @@ with tab2:
         st.download_button("Download equity_series.csv",data=deq[["date","equity"]].to_csv(index=False),file_name="equity_series.csv",mime="text/csv")
     else:
         st.info("No daily equity yet. Execute a trade or add funds to start the series.")
+
 
