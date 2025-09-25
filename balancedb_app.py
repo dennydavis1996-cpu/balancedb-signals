@@ -568,8 +568,8 @@ def compute_signals(market, positions_df, balances_df, params):
 ###########################
 
 # Load config parameters (from sheet or defaults)
-def load_params(sh):
-    cfg = load_tab(sh, "config")
+def load_params(sheet_url):
+    cfg = load_tab(sheet_url, "config")
     if cfg.empty: 
         return DEFAULT_PARAMS.copy()
     params = DEFAULT_PARAMS.copy()
@@ -585,7 +585,7 @@ tab1, tab2, tab3 = st.tabs(["⚡ Run Signals", "📂 My Portfolio", "📑 Report
 with tab1:
     st.subheader("Run Balanced_B signal scan")
 
-    params = load_params(SHEET)
+    params = load_params(SHEET_URL)
     market = load_market_data()
     balances_df, positions_df, ledger_df = TABS["balances"], TABS["positions"], TABS["ledger"]
 
@@ -692,9 +692,9 @@ with tab1:
 # ============ TAB 2: My Portfolio ==================
 with tab2:
     st.subheader("Portfolio Snapshot")
-    balances_df = load_tab(SHEET,"balances")
-    positions_df = load_tab(SHEET,"positions")
-    ledger_df = load_tab(SHEET,"ledger")
+    balances_df = load_tab(SHEET_URL,"balances")
+    positions_df = load_tab(SHEET_URL,"positions")
+    ledger_df = load_tab(SHEET_URL,"ledger")
 
     st.write("**Balances:**")
     st.dataframe(balances_df)
@@ -707,7 +707,7 @@ with tab2:
     st.dataframe(holdings)
 
     # Equity curve reconstruction
-    df_daily = load_tab(SHEET,"daily_equity")
+    df_daily = load_tab(SHEET_URL,"daily_equity")
     if not df_daily.empty:
         st.line_chart(df_daily.set_index("date")[["equity","cash","invested"]])
 
@@ -736,8 +736,8 @@ with tab2:
 with tab3:
     st.subheader("Reports & Analytics")
 
-    df_daily = load_tab(SHEET,"daily_equity")
-    ledger_df = load_tab(SHEET,"ledger")
+    df_daily = load_tab(SHEET_URL,"daily_equity")
+    ledger_df = load_tab(SHEET_URL,"ledger")
     if df_daily.empty or ledger_df.empty:
         st.warning("No data yet. Record trades first.")
     else:
@@ -772,6 +772,7 @@ with tab3:
             ax.hist(ledger_df["realized_pnl"].dropna(), bins=30, color="blue", alpha=0.6)
             ax.set_title("Realized PnL Distribution")
             st.pyplot(fig)
+
 
 
 
