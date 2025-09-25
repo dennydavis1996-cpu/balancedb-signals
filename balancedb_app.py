@@ -203,15 +203,17 @@ def compute_sharpe(returns):
     return np.sqrt(252)*mean/std if std>0 else np.nan
 
 def reconstruct_daily_equity(prices, balances, positions, ledger):
-    if prices.empty: return pd.Series()
+    if prices.empty:
+        return pd.Series()
     equity=[]
     for d in prices.index:
         mv = 0.0
         for sym,pos in positions.iterrows():
             if sym in prices.columns and not np.isnan(prices.loc[d,sym]):
                 mv += prices.loc[d,sym]*pos["shares"]
-        cash = float(balances.at[0,"cash"]) if "cash" in balances else DEFAULTS["base_capital"]
-        equity.append(mv+cash+float(balances.at[0].get("realized",0)))
+        cash = float(balances.at[0, "cash"]) if "cash" in balances else DEFAULTS["base_capital"]
+        realized = float(balances.at[0, "realized"]) if "realized" in balances else 0
+        equity.append(mv + cash + realized)
     return pd.Series(equity, index=prices.index, name="Equity")
 
 # ----------------- STREAMLIT APP -----------------
@@ -344,3 +346,4 @@ if sheet_url:
                 st.line_chart(roll_cagr.dropna())
         else:
             st.info("Not enough data for reports yet.")
+
