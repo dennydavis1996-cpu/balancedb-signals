@@ -45,44 +45,39 @@ DEFAULT_PARAMS = dict(
     turnover_window=20,
     lookback_days=420,
 )
-
 # ----------------- Google Sheets Integration -----------------
 def _service_account():
     """
     Authenticate with Google Sheets using service account stored in Streamlit secrets.
-    Place your service account JSON inside `.streamlit/secrets.toml` as:
-    gcp_service_account = { type="service_account", project_id="...", private_key="...", ... }
     """
     creds_dict = st.secrets["gcp_service_account"]
     creds = Credentials.from_service_account_info(
         creds_dict,
-        scopes=["https://www.googleapis.com/auth/spreadsheets",
-                "https://www.googleapis.com/auth/drive"],
+        scopes=[
+            "https://www.googleapis.com/auth/spreadsheets",
+            "https://www.googleapis.com/auth/drive",
+        ],
     )
     client = gspread.authorize(creds)
     return client
 
+@st.cache_resource(show_spinner=False)
 def open_sheet(url):
     """
-    Open Google Sheet by URL. Returns gspread Spreadsheet object.
+    Open Google Sheet by URL. Cached as a resource so we don’t re‑open on each run.
     """
     client = _service_account()
-    try:
-        sh = client.open_by_url(url)
-        return sh
-    except Exception as e:
-        st.error(f"❌ Could not open sheet: {e}")
-        st.stop()
+    return client.open_by_url(url)
 
 def ensure_tabs(sh):
     """
-    Ensure required tabs exist: balances, positions, ledger, config, daily_equity.
-    If missing, create with correct schema.
+    Ensure required tabs exist ONCE at startup (don’t call this every rerun).
     """
     required = {
         "balances": ["cash", "base_capital", "realized", "fees_paid", "last_update"],
         "positions": ["symbol", "shares", "avg_cost", "last_buy", "open_date"],
-        "ledger": ["date", "side", "symbol", "shares", "price", "fee", "reason", "realized_pnl", "cash_before", "cash_after", "holding_days"],
+        "ledger": ["date", "side", "symbol", "shares", "price", "fee", "reason",
+                   "realized_pnl", "cash_before", "cash_after", "holding_days"],
         "config": list(DEFAULT_PARAMS.keys()),
         "daily_equity": ["date", "equity", "cash", "invested", "exposure", "source"],
     }
@@ -90,20 +85,22 @@ def ensure_tabs(sh):
     for tab, cols in required.items():
         if tab not in existing_titles:
             ws = sh.add_worksheet(title=tab, rows="1000", cols=str(len(cols)))
-            ws.append_row(cols)  # header row
+            ws.append_row(cols)
             st.info(f"Created missing tab: {tab}")
 
 def save_df(sh, tab, df):
     """
     Save DataFrame to a specific tab, overwriting existing.
+    Write operations are not cached.
     """
     ws = sh.worksheet(tab)
     ws.clear()
     set_with_dataframe(ws, df.reset_index(drop=True))
 
+@st.cache_data(ttl=60)   # ✅ cache reads for 60s
 def load_tab(sh, tab):
     """
-    Read a tab into a DataFrame. Returns empty DF if missing or only header.
+    Read a tab into a DataFrame. CACHED for 60 seconds to reduce API hits.
     """
     try:
         ws = sh.worksheet(tab)
@@ -114,9 +111,11 @@ def load_tab(sh, tab):
     except Exception:
         return pd.DataFrame()
 
+@st.cache_data(ttl=60)   # ✅ cache all tabs for 60s
 def load_all(sh):
     """
-    Load all relevant tabs as dict of DataFrames.
+    Load all relevant tabs (balances, positions, ledger, config, daily_equity).
+    Cached for 60 seconds.
     """
     return {
         "balances": load_tab(sh, "balances"),
@@ -309,10 +308,8 @@ def today_str():
 # --------------------------------------------------
 def apply_trade_rows(sh, trades, balances_df, positions_df, ledger_df):
     """
-    Apply a list of trades (as dict rows) and update balances,
-    positions, and ledger accordingly. Save back to Google Sheets.
-    Each `trade` dict should have:
-    - date, side (BUY/SELL/FUND_IN/FUND_OUT), symbol, shares, price, fee, reason
+    Apply trades (BUY/SELL/FUND_IN/FUND_OUT) and update balances,
+    positions, and ledger in Google Sheets. Then clear cache so reads refresh.
     """
     cash = float(balances_df.iloc[0]["cash"]) if not balances_df.empty else DEFAULT_PARAMS["base_capital"]
     realized = float(balances_df.iloc[0].get("realized", 0)) if not balances_df.empty else 0
@@ -321,24 +318,23 @@ def apply_trade_rows(sh, trades, balances_df, positions_df, ledger_df):
     for tr in trades:
         sym, side = tr["symbol"], tr["side"]
         shares, price, fee = tr["shares"], tr["price"], tr["fee"]
-        reason = tr.get("reason","")
+        reason = tr.get("reason", "")
         date = tr.get("date", today_str())
         cash_before = cash
 
         if side == "BUY":
-            cost = shares*price + shares*price*fee
+            cost = shares * price + shares * price * fee
             if cash >= cost:
                 cash -= cost
-                fees_paid += shares*price*fee
-                # Update/append position
+                fees_paid += shares * price * fee
                 if sym in positions_df["symbol"].values:
-                    pos = positions_df.loc[positions_df["symbol"]==sym].iloc[0]
+                    pos = positions_df.loc[positions_df["symbol"] == sym].iloc[0]
                     old_shares = int(pos["shares"])
                     avg_cost = float(pos["avg_cost"])
-                    tot_cost = old_shares*avg_cost + shares*price
-                    new_shares = old_shares+shares
+                    tot_cost = old_shares * avg_cost + shares * price
+                    new_shares = old_shares + shares
                     new_avg = tot_cost / new_shares
-                    positions_df.loc[positions_df["symbol"]==sym, ["shares","avg_cost","last_buy","open_date"]] = [
+                    positions_df.loc[positions_df["symbol"] == sym, ["shares", "avg_cost", "last_buy", "open_date"]] = [
                         new_shares, new_avg, price, date
                     ]
                 else:
@@ -350,51 +346,53 @@ def apply_trade_rows(sh, trades, balances_df, positions_df, ledger_df):
 
         elif side == "SELL":
             if sym in positions_df["symbol"].values:
-                pos = positions_df.loc[positions_df["symbol"]==sym].iloc[0]
+                pos = positions_df.loc[positions_df["symbol"] == sym].iloc[0]
                 held_shares = int(pos["shares"])
                 avg_cost = float(pos["avg_cost"])
                 if shares > held_shares:
-                    shares = held_shares  # can't sell more than owned
-                proceeds_gross = shares*price
-                fee_amt = proceeds_gross*fee
+                    shares = held_shares
+                proceeds_gross = shares * price
+                fee_amt = proceeds_gross * fee
                 proceeds_net = proceeds_gross - fee_amt
-                pnl = proceeds_net - shares*avg_cost
+                pnl = proceeds_net - shares * avg_cost
                 cash += proceeds_net
                 realized += pnl
                 fees_paid += fee_amt
-                # reduce position
                 if shares == held_shares:
-                    positions_df = positions_df[positions_df["symbol"]!=sym]
+                    positions_df = positions_df[positions_df["symbol"] != sym]
                 else:
-                    positions_df.loc[positions_df["symbol"]==sym,"shares"] = held_shares-shares
+                    positions_df.loc[positions_df["symbol"] == sym, "shares"] = held_shares - shares
                 holding_days = (dt.date.fromisoformat(date) - dt.date.fromisoformat(pos["open_date"])).days
             else:
                 st.warning(f"No shares to sell for {sym}")
                 pnl, holding_days = 0, 0
-            # ledger entry append below
 
         elif side == "FUND_IN":
             cash += tr["amount"]
         elif side == "FUND_OUT":
             cash -= tr["amount"]
 
-        # Append to ledger
+        # Always record trade in ledger
         ledger_row = dict(date=date, side=side, symbol=sym, shares=shares, price=price,
-                          fee=fee, reason=reason, realized_pnl=locals().get("pnl",0),
-                          cash_before=cash_before, cash_after=cash, holding_days=locals().get("holding_days",0))
+                          fee=fee, reason=reason, realized_pnl=locals().get("pnl", 0),
+                          cash_before=cash_before, cash_after=cash,
+                          holding_days=locals().get("holding_days", 0))
         ledger_df = pd.concat([ledger_df, pd.DataFrame([ledger_row])], ignore_index=True)
 
-    # Save updated DataFrames
+    # Save updated data back to GSheet
     balances_new = pd.DataFrame([dict(
-        cash=round(cash,2),
+        cash=round(cash, 2),
         base_capital=DEFAULT_PARAMS["base_capital"],
-        realized=round(realized,2),
-        fees_paid=round(fees_paid,2),
+        realized=round(realized, 2),
+        fees_paid=round(fees_paid, 2),
         last_update=today_str(),
     )])
     save_df(sh, "balances", balances_new)
     save_df(sh, "positions", positions_df)
     save_df(sh, "ledger", ledger_df)
+
+    # 🧹 Clear Streamlit cache so subsequent loads fetch fresh Google Sheet state
+    st.cache_data.clear()
 
     return balances_new, positions_df, ledger_df
 
@@ -780,6 +778,7 @@ with tab3:
             ax.hist(ledger_df["realized_pnl"].dropna(), bins=30, color="blue", alpha=0.6)
             ax.set_title("Realized PnL Distribution")
             st.pyplot(fig)
+
 
 
 
