@@ -127,14 +127,20 @@ def load_all(sh):
     }
 
 # ----------------- Sidebar: Portfolio Selector -----------------
-st.sidebar.header("Portfolio Selection")
-portfolio_choice = st.sidebar.radio("Choose portfolio:", ["My Portfolio", "Wife Portfolio"])
+params = st.experimental_get_query_params()   # read URL query params
+default_choice = params.get("portfolio", ["My Portfolio"])[0]
 
-# Expect the secrets.toml to contain:
-# my_sheet_url = "https://docs.google.com/..."
-# wife_sheet_url = "https://docs.google.com/..."
+choice = st.sidebar.radio(
+    "Choose portfolio:",
+    ["My Portfolio", "Wife Portfolio"],
+    index=0 if default_choice=="My Portfolio" else 1,
+    key="portfolio_choice"
+)
 
-if portfolio_choice == "My Portfolio":
+# write the choice back into URL (so reload remembers)
+st.experimental_set_query_params(portfolio=choice)
+
+if choice == "My Portfolio":
     SHEET_URL = st.secrets["my_sheet_url"]
 else:
     SHEET_URL = st.secrets["wife_sheet_url"]
@@ -769,4 +775,5 @@ with tab3:
             ax.hist(ledger_df["realized_pnl"].dropna(), bins=30, color="blue", alpha=0.6)
             ax.set_title("Realized PnL Distribution")
             st.pyplot(fig)
+
 
