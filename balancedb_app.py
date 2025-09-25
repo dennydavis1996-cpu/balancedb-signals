@@ -589,91 +589,76 @@ with tab1:
     market = load_market_data()
     balances_df, positions_df, ledger_df = TABS["balances"], TABS["positions"], TABS["ledger"]
 
+    # Run Scan button - compute once and save to session state
     if st.button("🔍 Run scan now"):
         sigs = compute_signals(market, positions_df, balances_df, params)
+        st.session_state["signals"] = sigs   # ✅ persist results
+        st.success("Scan completed and signals stored.")
+
+    # Reuse signals if available
+    if "signals" in st.session_state:
+        sigs = st.session_state["signals"]
 
         st.info(f"Market Regime: **{sigs['regime']}** | Lot cash: ₹{sigs['lot_cash']:.0f}")
 
-        # ----------------------------------------
-        # SELL signals with checkboxes
-        # ----------------------------------------
+        # --- SELL signals with checkboxes ---
         st.markdown("### 🚪 SELL signals")
         selected_sells = []
-        if sigs["sells"].empty:
-            st.write("No SELL signals today.")
-        else:
-            for i, row in sigs["sells"].iterrows():
-                tick = st.checkbox(
-                    f"SELL {row['symbol']} @ {row['price']:.2f} ({row['reason']})",
-                    key=f"sell_{i}"
+        for i, row in sigs["sells"].iterrows():
+            key = f"sell_{i}"
+            tick = st.checkbox(f"SELL {row['symbol']} @ {row['price']:.2f} ({row['reason']})", key=key)
+            st.write(f"Shares: {row['shares']}, Gain: {row['gain_pct']}%")
+            if tick:
+                trade = dict(
+                    date=today_str(), side="SELL", symbol=row["symbol"],
+                    shares=int(row["shares"]), price=float(row["price"]),
+                    fee=params["fee"], reason=row["reason"]
                 )
-                st.write(f"Shares: {row['shares']}, Gain: {row['gain_pct']}%")
-                if tick:
-                    trade = dict(
-                        date=today_str(), side="SELL", symbol=row["symbol"],
-                        shares=int(row["shares"]), price=float(row["price"]),
-                        fee=params["fee"], reason=row["reason"]
-                    )
-                    selected_sells.append(trade)
+                selected_sells.append(trade)
 
-        st.markdown("---")
-
-        # ----------------------------------------
-        # New BUY signals with checkboxes
-        # ----------------------------------------
+        # --- New BUY signals ---
         st.markdown("### 🆕 New BUY signals")
         selected_buys = []
-        if sigs["new_buys"].empty:
-            st.write("No new BUY signals today.")
-        else:
-            for i, row in sigs["new_buys"].iterrows():
-                tick = st.checkbox(
-                    f"BUY {row['symbol']} @ {row['price']:.2f} (NEW)",
-                    key=f"buy_{i}"
+        for i, row in sigs["new_buys"].iterrows():
+            key = f"buy_{i}"
+            tick = st.checkbox(f"BUY {row['symbol']} @ {row['price']:.2f} (NEW)", key=key)
+            st.write(f"Shares: {row['shares']}")
+            if tick:
+                trade = dict(
+                    date=today_str(), side="BUY", symbol=row["symbol"],
+                    shares=int(row["shares"]), price=float(row["price"]),
+                    fee=params["fee"], reason="NEW"
                 )
-                st.write(f"Shares: {row['shares']}")
-                if tick:
-                    trade = dict(
-                        date=today_str(), side="BUY", symbol=row["symbol"],
-                        shares=int(row["shares"]), price=float(row["price"]),
-                        fee=params["fee"], reason="NEW"
-                    )
-                    selected_buys.append(trade)
+                selected_buys.append(trade)
 
-        st.markdown("---")
-
-        # ----------------------------------------
-        # Averaging signals with checkboxes
-        # ----------------------------------------
+        # --- Averaging signals ---
         st.markdown("### ➕ Averaging signals")
         selected_avgs = []
-        if sigs["averaging"].empty:
-            st.write("No averaging opportunities today.")
-        else:
-            for i, row in sigs["averaging"].iterrows():
-                tick = st.checkbox(
-                    f"AVERAGE {row['symbol']} @ {row['price']:.2f}",
-                    key=f"avg_{i}"
+        for i, row in sigs["averaging"].iterrows():
+            key = f"avg_{i}"
+            tick = st.checkbox(f"AVERAGE {row['symbol']} @ {row['price']:.2f}", key=key)
+            st.write(f"Shares: {row['shares']}")
+            if tick:
+                trade = dict(
+                    date=today_str(), side="BUY", symbol=row["symbol"],
+                    shares=int(row["shares"]), price=float(row["price"]),
+                    fee=params["fee"], reason="AVERAGE"
                 )
-                st.write(f"Shares: {row['shares']}")
-                if tick:
-                    trade = dict(
-                        date=today_str(), side="BUY", symbol=row["symbol"],
-                        shares=int(row["shares"]), price=float(row["price"]),
-                        fee=params["fee"], reason="AVERAGE"
-                    )
-                    selected_avgs.append(trade)
+                selected_avgs.append(trade)
 
-        # ----------------------------------------
-        # Confirm selected trades
-        # ----------------------------------------
+        # Confirm button
         if st.button("✅ Confirm Selected Trades"):
             all_trades = selected_sells + selected_buys + selected_avgs
             if all_trades:
                 new_bal, new_pos, new_ledger = apply_trade_rows(SHEET, all_trades, balances_df, positions_df, ledger_df)
                 st.success(f"Recorded {len(all_trades)} trades.")
+                st.cache_data.clear()
+                del st.session_state["signals"]   # clear signals after applying
             else:
                 st.warning("No trades selected.")
+
+    else:
+        st.info("Run scan to generate signals.")
 
     # ----------------------------------------
     # Funds Management (separate section)
@@ -772,6 +757,7 @@ with tab3:
             ax.hist(ledger_df["realized_pnl"].dropna(), bins=30, color="blue", alpha=0.6)
             ax.set_title("Realized PnL Distribution")
             st.pyplot(fig)
+
 
 
 
