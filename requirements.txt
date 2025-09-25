@@ -2,11 +2,6 @@ streamlit
 pandas
 numpy
 yfinance
-requests
-beautifulsoup4
-html5lib
 gspread
-google-auth
-gspread-dataframe
+oauth2client
 matplotlib
-python-dateutil
