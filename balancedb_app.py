@@ -127,22 +127,23 @@ def load_all(sh):
     }
 
 # ----------------- Sidebar: Portfolio Selector (with persistence) -----------------
-# Read from query params so last choice sticks in the URL
-params = st.experimental_get_query_params()
-default_choice = params.get("portfolio", ["My Portfolio"])[0]
 
-# Sidebar radio with remembered default
+# Initialize query params if not set
+if "portfolio" not in st.query_params:
+    st.query_params["portfolio"] = "My Portfolio"   # default
+
+# Sidebar radio with persistent default
 portfolio_choice = st.sidebar.radio(
     "Choose portfolio:",
     ["My Portfolio", "Wife Portfolio"],
-    index=0 if default_choice == "My Portfolio" else 1,
+    index=0 if st.query_params["portfolio"] == "My Portfolio" else 1,
     key="portfolio_choice"
 )
 
-# Write back to the URL so it persists across reloads/bookmarks
-st.experimental_set_query_params(portfolio=portfolio_choice)
+# Update the query param when user changes selection
+st.query_params["portfolio"] = portfolio_choice
 
-# Select Sheet URL
+# Select appropriate Sheet URL
 if portfolio_choice == "My Portfolio":
     SHEET_URL = st.secrets["my_sheet_url"]
 else:
@@ -779,6 +780,7 @@ with tab3:
             ax.hist(ledger_df["realized_pnl"].dropna(), bins=30, color="blue", alpha=0.6)
             ax.set_title("Realized PnL Distribution")
             st.pyplot(fig)
+
 
 
 
