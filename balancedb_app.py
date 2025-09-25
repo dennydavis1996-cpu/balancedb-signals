@@ -52,6 +52,7 @@ def open_sheet(url):
     return _service_account().open_by_url(url)
 
 def ensure_tabs(sh):
+    """Ensure required tabs exist and headers set"""
     schemas = {
         "balances": ["cash","base_capital","realized","fees_paid","last_update"],
         "positions": ["symbol","shares","avg_cost","last_buy","open_date"],
@@ -61,7 +62,7 @@ def ensure_tabs(sh):
     }
     for tab, cols in schemas.items():
         try:
-            ws = sh.worksheet(tab)
+            sh.worksheet(tab)
         except gspread.exceptions.WorksheetNotFound:
             ws = sh.add_worksheet(title=tab, rows=1000, cols=len(cols))
             ws.append_row(cols)
@@ -143,7 +144,7 @@ def fetch_nifty100_symbols():
         df = pd.read_csv(N100_URL)
         symbols = sorted(df["Symbol"].dropna().astype(str).str.upper().tolist())
         return [s+".NS" for s in symbols]
-    except Exception as e:
+    except Exception:
         st.error("Could not fetch NIFTY100 list. Returning empty list.")
         return []
 
@@ -227,6 +228,7 @@ if sheet_url:
     if balances.empty:
         balances = pd.DataFrame([{"cash":DEFAULTS["base_capital"],"base_capital":DEFAULTS["base_capital"],"realized":0,"fees_paid":0,"last_update":str(datetime.today().date())}])
         save_df(sh,"balances",balances)
+
     positions = read_tab(sh,"positions").set_index("symbol") if not read_tab(sh,"positions").empty else pd.DataFrame(columns=["shares","avg_cost","last_buy","open_date"]).set_index(pd.Index([]))
     config_df = read_tab(sh,"config")
     config = DEFAULTS.copy()
@@ -239,13 +241,13 @@ if sheet_url:
     data = safe_yf_download(tickers, start, end)
     prices = data["Adj Close"] if not data.empty else pd.DataFrame()
 
-    tabs = st.tabs(["📊 Run Signals", "💼 My Portfolio"])
+    tabs = st.tabs(["📊 Run Signals", "💼 My Portfolio", "📑 Reports & Analytics"])
 
     with tabs[0]:
         st.subheader("📊 Trade Signals")
         if run_button and not prices.empty:
             sigs = compute_signals(prices, config, positions)
-            st.success("Signals generated successfully ✅")
+            st.success("Signals generated ✅")
             st.markdown("### 🔴 SELL Signals")
             st.write(pd.DataFrame(sigs["SELL"], columns=["symbol","price","reason"]))
             st.markdown("### 🟢 NEW BUY Signals")
@@ -256,7 +258,7 @@ if sheet_url:
         st.markdown("### 📝 Record Trades")
         with st.form("trade_form"):
             trade_side = st.selectbox("Side", ["BUY","SELL"])
-            trade_symbol = st.text_input("Symbol (in Yahoo format, e.g. RELIANCE.NS)")
+            trade_symbol = st.text_input("Symbol (Yahoo format e.g. RELIANCE.NS)")
             trade_shares = st.number_input("Shares", value=0, step=1)
             trade_price = st.number_input("Price", value=0.0)
             trade_reason = st.text_input("Reason", "")
@@ -271,20 +273,19 @@ if sheet_url:
                     realized_pnl=0.0
                 )
                 apply_trade_rows(sh,[trade], balances, positions)
-                st.success("✅ Trade recorded.")
+                st.success("✅ Trade recorded")
 
     with tabs[1]:
         st.subheader("💼 Portfolio Snapshot")
         snaps = position_snapshot(prices, positions) if not prices.empty else pd.DataFrame()
         if not snaps.empty:
             st.dataframe(snaps.style.bar(subset=["unrealized_pct"], align="mid", color=["red","green"]))
-
             ledger = read_tab(sh,"ledger")
             equity_series = reconstruct_daily_equity(prices, balances, positions, ledger)
             if not equity_series.empty:
                 st.markdown("### 📈 Equity Curve")
                 st.line_chart(equity_series)
-                st.markdown("### 📉 Underwater (Drawdown)")
+                st.markdown("### 📉 Drawdown")
                 st.area_chart(compute_drawdown(equity_series))
                 rets = equity_series.pct_change().dropna()
                 cagr = compute_cagr(equity_series)
@@ -294,4 +295,52 @@ if sheet_url:
                 st.download_button("⬇️ Download Holdings CSV", snaps.to_csv(), "holdings.csv")
                 st.download_button("⬇️ Download Equity CSV", equity_series.to_csv(), "equity.csv")
         else:
-            st.info("No active positions found.")
+            st.info("No active positions yet")
+
+    with tabs[2]:
+        st.subheader("📑 Reports & Analytics")
+        ledger = read_tab(sh,"ledger")
+        equity_series = reconstruct_daily_equity(prices, balances, positions, ledger)
+
+        if not equity_series.empty and not ledger.empty:
+            rets = equity_series.pct_change().dropna()
+            cagr = compute_cagr(equity_series)
+            sharpe = compute_sharpe(rets)
+            dd = compute_drawdown(equity_series).min()
+            fees_paid = float(balances.at[0,"fees_paid"]) if "fees_paid" in balances else 0
+            st.markdown("### 📋 Performance Summary")
+            st.write(pd.DataFrame({
+                "CAGR":[f"{cagr:.2%}"],
+                "Sharpe":[f"{sharpe:.2f}"],
+                "Max Drawdown":[f"{dd:.2%}"],
+                "Fees Paid":[f"₹{fees_paid:,.0f}"]
+            }))
+
+            st.markdown("### 🎯 Realized PnL % Histogram")
+            sells = ledger[ledger["side"]=="SELL"].copy()
+            if not sells.empty and "realized_pnl" in sells:
+                sells["pnl_pct"] = sells["realized_pnl"]/(sells["price"]*sells["shares"]).replace(0,np.nan)
+                fig, ax = plt.subplots(figsize=(6,4))
+                ax.hist(sells["pnl_pct"].dropna()*100, bins=40, color="skyblue", edgecolor="black")
+                ax.set_xlabel("PnL (%)"); ax.set_ylabel("Count")
+                ax.set_title("Trade Return Distribution")
+                st.pyplot(fig)
+
+            st.markdown("### 📊 Exposure Over Time")
+            exposure=[]
+            for d in prices.index:
+                mv_total=0.0
+                for sym,pos in positions.iterrows():
+                    if sym in prices.columns and not np.isnan(prices.loc[d,sym]):
+                        mv_total += prices.loc[d,sym]*pos["shares"]
+                eq = mv_total+float(balances.at[0,"cash"])+float(balances.at[0,"realized"])
+                exp = mv_total/eq if eq>0 else 0
+                exposure.append(exp)
+            st.line_chart(pd.Series(exposure,index=prices.index,name="Exposure"))
+
+            st.markdown("### 🔄 Rolling 1Y CAGR")
+            if len(equity_series)>252:
+                roll_cagr = (equity_series/equity_series.shift(252))-1
+                st.line_chart(roll_cagr.dropna())
+        else:
+            st.info("Not enough data for reports yet.")
