@@ -25,7 +25,7 @@ st.title("📈 Balanced_B Signals — NIFTY100")
 DEFAULTS = dict(
     base_capital=500000,
     fee=0.0011,
-    ma=20,
+    ma=3,
     bottom_n=16,
     max_new_buys=3,
     avg_dd=0.035,
@@ -37,7 +37,7 @@ DEFAULTS = dict(
     divisor=30,
     divisor_bear=38,
     lookback_days=420,
-    min_turnover_cr=8.0,   # 20D median turnover filter in ₹ Cr
+    min_turnover_cr=0.0,   # 20D median turnover filter in ₹ Cr
     turnover_window=20,
     avg_in_bear_z_thresh=-1.8
 )
@@ -257,3 +257,4 @@ if sheet_url:
                     ax.hist(sells["pnl_pct"].dropna()*100,bins=40,color="tab:blue",alpha=0.7)
                     ax.set_title("Realized PnL Distribution (%)"); st.pyplot(fig)
                 if len(equity)>252: st.line_chart(((equity/equity.shift(252))-1).dropna())
+
