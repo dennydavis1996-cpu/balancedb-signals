@@ -585,87 +585,105 @@ tab1, tab2, tab3 = st.tabs(["⚡ Run Signals", "📂 My Portfolio", "📑 Report
 with tab1:
     st.subheader("Run Balanced_B signal scan")
 
+    # Load config & market
     params = load_params(SHEET_URL)
     market = load_market_data()
     balances_df, positions_df, ledger_df = TABS["balances"], TABS["positions"], TABS["ledger"]
 
-    # Run Scan button - compute once and save to session state
+    # --- Run scan button ---
     if st.button("🔍 Run scan now"):
         sigs = compute_signals(market, positions_df, balances_df, params)
-        st.session_state["signals"] = sigs   # ✅ persist results
-        st.success("Scan completed and signals stored.")
+        st.session_state["signals"] = sigs   # ✅ persist scan results for later reruns
+        st.success("Signal scan completed!")
 
-    # Reuse signals if available
+    # --- Show signals if available ---
     if "signals" in st.session_state:
         sigs = st.session_state["signals"]
-
         st.info(f"Market Regime: **{sigs['regime']}** | Lot cash: ₹{sigs['lot_cash']:.0f}")
 
-        # --- SELL signals with checkboxes ---
+        # --------------- SELL signals ----------------
         st.markdown("### 🚪 SELL signals")
         selected_sells = []
-        for i, row in sigs["sells"].iterrows():
-            key = f"sell_{i}"
-            tick = st.checkbox(f"SELL {row['symbol']} @ {row['price']:.2f} ({row['reason']})", key=key)
-            st.write(f"Shares: {row['shares']}, Gain: {row['gain_pct']}%")
-            if tick:
-                trade = dict(
-                    date=today_str(), side="SELL", symbol=row["symbol"],
-                    shares=int(row["shares"]), price=float(row["price"]),
-                    fee=params["fee"], reason=row["reason"]
-                )
-                selected_sells.append(trade)
+        if sigs["sells"].empty:
+            st.write("No SELL signals today.")
+        else:
+            for i, row in sigs["sells"].iterrows():
+                sym, shares, sugg_price, reason, gain = row["symbol"], int(row["shares"]), float(row["price"]), row["reason"], row["gain_pct"]
+                tick = st.checkbox(f"SELL {sym} (Suggested: ₹{sugg_price:.2f}, {reason})", key=f"sell_{i}")
+                if tick:
+                    exec_price = st.number_input(
+                        f"Enter execution SELL price for {sym}",
+                        min_value=0.0, value=sugg_price, step=0.1, key=f"sell_price_{i}"
+                    )
+                    st.write(f"Shares: {shares}, Gain: {gain}%")
+                    trade = dict(date=today_str(), side="SELL", symbol=sym,
+                                 shares=shares, price=exec_price,
+                                 fee=params["fee"], reason=reason)
+                    selected_sells.append(trade)
 
-        # --- New BUY signals ---
+        st.markdown("---")
+
+        # --------------- NEW BUY signals ---------------
         st.markdown("### 🆕 New BUY signals")
         selected_buys = []
-        for i, row in sigs["new_buys"].iterrows():
-            key = f"buy_{i}"
-            tick = st.checkbox(f"BUY {row['symbol']} @ {row['price']:.2f} (NEW)", key=key)
-            st.write(f"Shares: {row['shares']}")
-            if tick:
-                trade = dict(
-                    date=today_str(), side="BUY", symbol=row["symbol"],
-                    shares=int(row["shares"]), price=float(row["price"]),
-                    fee=params["fee"], reason="NEW"
-                )
-                selected_buys.append(trade)
+        if sigs["new_buys"].empty:
+            st.write("No new BUY signals today.")
+        else:
+            for i, row in sigs["new_buys"].iterrows():
+                sym, shares, sugg_price = row["symbol"], int(row["shares"]), float(row["price"])
+                tick = st.checkbox(f"BUY {sym} (Suggested: ₹{sugg_price:.2f}, NEW)", key=f"buy_{i}")
+                if tick:
+                    exec_price = st.number_input(
+                        f"Enter execution BUY price for {sym}",
+                        min_value=0.0, value=sugg_price, step=0.1, key=f"buy_price_{i}"
+                    )
+                    st.write(f"Shares: {shares}")
+                    trade = dict(date=today_str(), side="BUY", symbol=sym,
+                                 shares=shares, price=exec_price,
+                                 fee=params["fee"], reason="NEW")
+                    selected_buys.append(trade)
 
-        # --- Averaging signals ---
+        st.markdown("---")
+
+        # --------------- AVERAGING signals ---------------
         st.markdown("### ➕ Averaging signals")
         selected_avgs = []
-        for i, row in sigs["averaging"].iterrows():
-            key = f"avg_{i}"
-            tick = st.checkbox(f"AVERAGE {row['symbol']} @ {row['price']:.2f}", key=key)
-            st.write(f"Shares: {row['shares']}")
-            if tick:
-                trade = dict(
-                    date=today_str(), side="BUY", symbol=row["symbol"],
-                    shares=int(row["shares"]), price=float(row["price"]),
-                    fee=params["fee"], reason="AVERAGE"
-                )
-                selected_avgs.append(trade)
+        if sigs["averaging"].empty:
+            st.write("No averaging signals today.")
+        else:
+            for i, row in sigs["averaging"].iterrows():
+                sym, shares, sugg_price = row["symbol"], int(row["shares"]), float(row["price"])
+                tick = st.checkbox(f"AVERAGE {sym} (Suggested: ₹{sugg_price:.2f})", key=f"avg_{i}")
+                if tick:
+                    exec_price = st.number_input(
+                        f"Enter execution AVG price for {sym}",
+                        min_value=0.0, value=sugg_price, step=0.1, key=f"avg_price_{i}"
+                    )
+                    st.write(f"Shares: {shares}")
+                    trade = dict(date=today_str(), side="BUY", symbol=sym,
+                                 shares=shares, price=exec_price,
+                                 fee=params["fee"], reason="AVERAGE")
+                    selected_avgs.append(trade)
 
-        # Confirm button
+        # --------------- Confirm Selected Trades ---------------
         if st.button("✅ Confirm Selected Trades"):
             all_trades = selected_sells + selected_buys + selected_avgs
             if all_trades:
                 new_bal, new_pos, new_ledger = apply_trade_rows(SHEET, all_trades, balances_df, positions_df, ledger_df)
                 st.success(f"Recorded {len(all_trades)} trades.")
                 st.cache_data.clear()
-                del st.session_state["signals"]   # clear signals after applying
+                # clear signals so you don’t accidentally reuse them
+                del st.session_state["signals"]
             else:
                 st.warning("No trades selected.")
 
     else:
-        st.info("Run scan to generate signals.")
+        st.info("Click 'Run scan' to generate signals.")
 
-    # ----------------------------------------
-    # Funds Management (separate section)
-    # ----------------------------------------
+    # =========== Funds Management Section ===========
     st.markdown("## 💰 Funds Management")
     with st.form("funds_form"):
-        action = st.selectbox("Action", ["FUND_IN","FUND_OUT"])
+        action = st.selectbox("Action", ["FUND_IN", "FUND_OUT"])
         amount = st.number_input("Amount (₹)", min_value=1000, step=500)
         submit_f = st.form_submit_button("Apply")
         if submit_f:
@@ -673,6 +691,8 @@ with tab1:
                          price=0, fee=0, reason="Funds", amount=amount)
             new_bal, new_pos, new_ledger = apply_trade_rows(SHEET, [trade], balances_df, positions_df, ledger_df)
             st.success(f"Funds {action} of ₹{amount} recorded.")
+            st.cache_data.clear()
+
 
 # ============ TAB 2: My Portfolio ==================
 with tab2:
@@ -757,6 +777,7 @@ with tab3:
             ax.hist(ledger_df["realized_pnl"].dropna(), bins=30, color="blue", alpha=0.6)
             ax.set_title("Realized PnL Distribution")
             st.pyplot(fig)
+
 
 
 
