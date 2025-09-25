@@ -2,6 +2,10 @@ streamlit
 pandas
 numpy
 yfinance
-gspread
-oauth2client
 matplotlib
+requests
+beautifulsoup4
+html5lib
+gspread
+gspread-dataframe
+google-auth
