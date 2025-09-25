@@ -126,21 +126,24 @@ def load_all(sh):
         "daily_equity": load_tab(sh, "daily_equity"),
     }
 
-# ----------------- Sidebar: Portfolio Selector -----------------
-params = st.experimental_get_query_params()   # read URL query params
+# ----------------- Sidebar: Portfolio Selector (with persistence) -----------------
+# Read from query params so last choice sticks in the URL
+params = st.experimental_get_query_params()
 default_choice = params.get("portfolio", ["My Portfolio"])[0]
 
-choice = st.sidebar.radio(
+# Sidebar radio with remembered default
+portfolio_choice = st.sidebar.radio(
     "Choose portfolio:",
     ["My Portfolio", "Wife Portfolio"],
-    index=0 if default_choice=="My Portfolio" else 1,
+    index=0 if default_choice == "My Portfolio" else 1,
     key="portfolio_choice"
 )
 
-# write the choice back into URL (so reload remembers)
-st.experimental_set_query_params(portfolio=choice)
+# Write back to the URL so it persists across reloads/bookmarks
+st.experimental_set_query_params(portfolio=portfolio_choice)
 
-if choice == "My Portfolio":
+# Select Sheet URL
+if portfolio_choice == "My Portfolio":
     SHEET_URL = st.secrets["my_sheet_url"]
 else:
     SHEET_URL = st.secrets["wife_sheet_url"]
@@ -148,6 +151,7 @@ else:
 SHEET = open_sheet(SHEET_URL)
 ensure_tabs(SHEET)
 TABS = load_all(SHEET)
+
 ###########################
 # balancedb_app.py - Part 2
 # Market data functions
@@ -775,5 +779,6 @@ with tab3:
             ax.hist(ledger_df["realized_pnl"].dropna(), bins=30, color="blue", alpha=0.6)
             ax.set_title("Realized PnL Distribution")
             st.pyplot(fig)
+
 
 
