@@ -162,205 +162,6 @@ def load_market_data(lookback_days=420):
     med_turnover=turnover_cr.rolling(20,min_periods=20).median()
     return dict(bench=bench,prices=prices,vols=vols,
                 med_turnover=med_turnover,tickers=list(prices.columns))
-	# -------- Google Sheets helpers --------
-REQ_TABS = ["balances","positions","ledger","config","daily_equity"]
-
-def _service_account():
-    # Use Streamlit secrets (recommended on Streamlit Cloud)
-    if "gcp_service_account" in st.secrets:
-        creds = Credentials.from_service_account_info(
-            st.secrets["gcp_service_account"],
-            scopes=["https://www.googleapis.com/auth/spreadsheets"]
-        )
-        return gspread.authorize(creds), st.secrets["gcp_service_account"].get("client_email", "")
-    # Local: look for env var pointing to JSON file
-    sa_path = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS")
-    if sa_path and os.path.exists(sa_path):
-        creds = Credentials.from_service_account_file(
-            sa_path, scopes=["https://www.googleapis.com/auth/spreadsheets"]
-        )
-        return gspread.authorize(creds), json.load(open(sa_path)).get("client_email","")
-    st.error("Service account credentials not found. Add to st.secrets['gcp_service_account'] or set GOOGLE_APPLICATION_CREDENTIALS.")
-    st.stop()
-
-def open_sheet(url):
-    gc, sa_email = _service_account()
-    try:
-        sh = gc.open_by_url(url)
-        return sh, sa_email
-    except Exception as e:
-        st.error(f"Could not open Sheet. Share it with the service account email. Error: {e}")
-        st.stop()
-
-def ensure_tabs(sh):
-    titles = [w.title for w in sh.worksheets()]
-    def make(name, cols):
-        ws = sh.add_worksheet(title=name, rows=1000, cols=max(10,len(cols)+2))
-        set_with_dataframe(ws, pd.DataFrame(columns=cols))
-    if "balances" not in titles:
-        make("balances", ["cash","base_capital","realized","fees_paid","last_update"])
-        set_with_dataframe(
-            sh.worksheet("balances"),
-            pd.DataFrame([dict(
-                cash=DEFAULTS["base_capital"], base_capital=DEFAULTS["base_capital"],
-                realized=0.0, fees_paid=0.0, last_update=str(date.today())
-            )])
-        )
-    if "positions" not in titles:
-        make("positions", ["symbol","shares","avg_cost","last_buy","open_date"])
-    if "ledger" not in titles:
-        make("ledger", ["date","side","symbol","shares","price","fee","reason","realized_pnl"])
-    if "config" not in titles:
-        make("config", ["fee","divisor","divisor_bear","take_profit","time_stop_days","telegram_token","telegram_chat_id"])
-        set_with_dataframe(sh.worksheet("config"),
-            pd.DataFrame([dict(
-                fee=DEFAULTS["fee"], divisor=DEFAULTS["divisor"], divisor_bear=DEFAULTS["divisor_bear"],
-                take_profit=DEFAULTS["take_profit"], time_stop_days=DEFAULTS["time_stop_days"],
-                telegram_token="", telegram_chat_id=""
-            )])
-        )
-    if "daily_equity" not in titles:
-        make("daily_equity", ["date","equity","cash","invested","exposure","source"])
-
-def load_all(sh):
-    def df_of(name):
-        ws = sh.worksheet(name)
-        df = get_as_dataframe(ws, evaluate_formulas=True, header=0).dropna(how="all")
-        df.columns = [c.strip() for c in df.columns]
-        return df
-    balances = df_of("balances")
-    positions = df_of("positions")
-    ledger = df_of("ledger")
-    config = df_of("config")
-    daily_eq = df_of("daily_equity")
-    # Clean types
-    if not balances.empty:
-        for c in ["cash","base_capital","realized","fees_paid"]:
-            if c in balances.columns:
-                balances[c] = pd.to_numeric(balances[c], errors="coerce")
-    if not positions.empty:
-        positions["shares"] = pd.to_numeric(positions["shares"], errors="coerce").fillna(0).astype(int)
-        for c in ["avg_cost","last_buy"]:
-            if c in positions.columns: positions[c] = pd.to_numeric(positions[c], errors="coerce")
-    if not ledger.empty:
-        ledger["shares"] = pd.to_numeric(ledger["shares"], errors="coerce").fillna(0).astype(int)
-        for c in ["price","fee","realized_pnl"]:
-            if c in ledger.columns: ledger[c] = pd.to_numeric(ledger[c], errors="coerce")
-    if not daily_eq.empty:
-        for c in ["equity","cash","invested","exposure"]:
-            if c in daily_eq.columns: daily_eq[c] = pd.to_numeric(daily_eq[c], errors="coerce")
-    return balances, positions, ledger, config, daily_eq
-
-def save_df(sh, name, df):
-    ws = sh.worksheet(name)
-    ws.clear()
-    set_with_dataframe(ws, df)
-
-# ----------------- Portfolio valuation + backfill -----------------
-def reconstruct_daily_equity(ledger, balances, start_day, end_day, price_df, fee_default):
-    """
-    Recompute full daily equity series from inception to end_day (inclusive).
-    ledger: BUY/SELL/FUND_IN/FUND_OUT with date, shares, price, fee.
-    price_df: Adj Close for all symbols seen in ledger+positions, ffilled.
-    """
-    if price_df.empty:
-        return pd.DataFrame(columns=["date","equity","cash","invested","exposure","source"])
-    days = price_df.index[(price_df.index.date >= start_day) & (price_df.index.date <= end_day)]
-    if len(days)==0:
-        return pd.DataFrame(columns=["date","equity","cash","invested","exposure","source"])
-    # Initial state
-    cash = float(balances.iloc[0]["cash"]) if not balances.empty else DEFAULTS["base_capital"]
-    base_capital = float(balances.iloc[0]["base_capital"]) if not balances.empty else DEFAULTS["base_capital"]
-    realized = float(balances.iloc[0]["realized"]) if not balances.empty else 0.0
-    fees_paid = float(balances.iloc[0]["fees_paid"]) if not balances.empty else 0.0
-    positions = {}
-    led = ledger.copy()
-    if "date" in led.columns:
-        led["date"] = pd.to_datetime(led["date"]).dt.date
-    else:
-        led["date"] = []
-    led = led.sort_values(["date","side","symbol"])
-    rows=[]
-    for d in days:
-        day = d.date()
-        day_trades = led[led["date"]==day] if not led.empty else pd.DataFrame(columns=led.columns)
-        for _, tr in day_trades.iterrows():
-            side=(tr.get("side") or "").upper()
-            sym=str(tr.get("symbol") or "").strip()
-            qty=int(tr.get("shares") or 0)
-            px=float(tr.get("price") or 0.0)
-            fee=float(tr.get("fee") or (fee_default*qty*px))
-            if side=="FUND_IN":
-                cash+=px; base_capital+=px
-            elif side=="FUND_OUT":
-                cash-=px; base_capital-=px
-            elif side=="BUY" and sym:
-                gross=qty*px; total=gross+fee
-                cash-=total; fees_paid+=fee
-                if sym in positions:
-                    pos=positions[sym]
-                    tot_cost=pos["avg_cost"]*pos["shares"]+gross
-                    pos["shares"]+=qty
-                    pos["avg_cost"]=(tot_cost/pos["shares"]) if pos["shares"]>0 else pos["avg_cost"]
-                    pos["last_buy"]=px
-                else:
-                    positions[sym]=dict(shares=qty,avg_cost=px,last_buy=px,open_date=day)
-            elif side=="SELL" and sym:
-                if sym not in positions: continue
-                pos=positions[sym]
-                qty=min(qty,pos["shares"])
-                gross=qty*px
-                proceeds=gross-fee
-                cash+=proceeds; fees_paid+=fee
-                realized+=proceeds-qty*pos["avg_cost"]
-                pos["shares"]-=qty
-                if pos["shares"] <= 0:
-                    del positions[sym]
-        invested=0.0
-        for sym,pos in positions.items():
-            if sym not in price_df.columns: continue
-            close_px=float(price_df.loc[d,sym])
-            invested+=close_px*pos["shares"]
-        equity=cash+invested
-        exposure=invested/equity if equity>0 else 0.0
-        rows.append(dict(date=str(day),equity=round(equity,2),cash=round(cash,2),
-                         invested=round(invested,2),exposure=round(exposure,4),source="close"))
-    return pd.DataFrame(rows)
-# ----------------- Position snapshot -----------------
-def position_snapshot(positions_df, last_close_row):
-    rows = []
-    mv = 0.0
-    if positions_df is None or positions_df.empty or last_close_row is None or last_close_row.empty:
-        return pd.DataFrame(columns=["symbol","shares","avg_cost","last_price",
-                                     "market_value","unrealized_pnl","unrealized_pct"]), 0.0
-    
-    # Make a lookup dict with both raw and .NS forms for robustness
-    symbol_map = {s.upper(): float(px) for s, px in last_close_row.items()}
-    for sym in symbol_map.copy():
-        if not sym.endswith(".NS"):
-            symbol_map[sym+".NS"] = symbol_map[sym]
-        else:
-            base = sym.replace(".NS","")
-            symbol_map[base] = symbol_map[sym]
-
-    # Loop positions
-    for _, r in positions_df.iterrows():
-        sym = str(r["symbol"]).upper()
-        sh = int(r["shares"])
-        avg = float(r["avg_cost"])
-        px = symbol_map.get(sym, 0.0)
-        mval = sh * px
-        mv += mval
-        unr = (px - avg) * sh
-        unr_pct = ((px/avg - 1) * 100) if avg > 0 else 0.0
-
-        rows.append(dict(
-            symbol=sym, shares=sh, avg_cost=round(avg,2),
-            last_price=round(px,2), market_value=round(mval,2),
-            unrealized_pnl=round(unr,2), unrealized_pct=round(unr_pct,2)
-        ))
-
-    return pd.DataFrame(rows).sort_values("market_value", ascending=False), mv
 
 # ----------------- Compute Signals -----------------
 def shares_from_lot(price, lot_cash, fee):
@@ -373,15 +174,19 @@ def compute_signals(params, mkt, positions_df, balances_df, ledger_df, sells_don
     bench=mkt["bench"]; prices=mkt["prices"]; vols=mkt["vols"]; med_turnover=mkt["med_turnover"]
     tickers=mkt["tickers"]
 
-    # Use live prices
+    # --- Try get live prices
     live_prices = {}
     try:
         data = yf.download(tickers + ["^NSEI"], period="5d", interval="1d", progress=False)
         if isinstance(data.columns, pd.MultiIndex):
             close=data["Close"].ffill().iloc[-1]
             live_prices=close.to_dict()
-    except: pass
+    except Exception as e:
+        st.warning(f"⚠️ Live price fetch failed: {e}. Using yesterday’s close for signals.")
 
+    if not live_prices:
+        st.warning("⚠️ No live prices available — using last cached daily close instead.")
+    
     today=bench.index[-1]
     bench_ma60=bench.rolling(p["regime_filter_ma"], min_periods=p["regime_filter_ma"]).mean().iloc[-1]
     bench_live=live_prices.get("^NSEI", float(bench.iloc[-1]))
@@ -469,7 +274,6 @@ def compute_signals(params, mkt, positions_df, balances_df, ledger_df, sells_don
         regime_ok=regime_ok, bench_live=bench_live, lot_cash=lot_cash,
         sells=sells, buys_new=buys_new, buys_avg=buys_avg, cash=cash
     )
-
 # ----------------- Apply executed trades -----------------
 def apply_trade_rows(sh, trades, fee_rate):
     balances, positions, ledger, config, daily_eq = load_all(sh)
@@ -829,5 +633,6 @@ with tab2:
         st.download_button("Download equity_series.csv",data=deq[["date","equity"]].to_csv(index=False),file_name="equity_series.csv",mime="text/csv")
     else:
         st.info("No daily equity yet. Execute a trade or add funds to start the series.")
+
 
 
