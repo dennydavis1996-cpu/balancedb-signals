@@ -591,32 +591,100 @@ with tab1:
 
         st.info(f"Market Regime: **{sigs['regime']}** | Lot cash: ₹{sigs['lot_cash']:.0f}")
 
-        c1, c2, c3 = st.columns(3)
-        with c1:
-            st.markdown("### 🚪 SELL signals")
-            st.dataframe(sigs["sells"])
-        with c2:
-            st.markdown("### 🆕 New BUY signals")
-            st.dataframe(sigs["new_buys"])
-        with c3:
-            st.markdown("### ➕ Averaging signals")
-            st.dataframe(sigs["averaging"])
+        # ----------------------------------------
+        # SELL signals with checkboxes
+        # ----------------------------------------
+        st.markdown("### 🚪 SELL signals")
+        selected_sells = []
+        if sigs["sells"].empty:
+            st.write("No SELL signals today.")
+        else:
+            for i, row in sigs["sells"].iterrows():
+                tick = st.checkbox(
+                    f"SELL {row['symbol']} @ {row['price']:.2f} ({row['reason']})",
+                    key=f"sell_{i}"
+                )
+                st.write(f"Shares: {row['shares']}, Gain: {row['gain_pct']}%")
+                if tick:
+                    trade = dict(
+                        date=today_str(), side="SELL", symbol=row["symbol"],
+                        shares=int(row["shares"]), price=float(row["price"]),
+                        fee=params["fee"], reason=row["reason"]
+                    )
+                    selected_sells.append(trade)
 
         st.markdown("---")
-        st.markdown("### 📋 Record Trades")
 
-        with st.form("trade_form"):
-            side = st.selectbox("Side", ["BUY","SELL","FUND_IN","FUND_OUT"])
-            symbol = st.text_input("Symbol (e.g. RELIANCE.NS)")
-            price = st.number_input("Price", min_value=0.0, step=0.1)
-            shares = st.number_input("Shares", min_value=0, step=1)
-            fee = params["fee"]
-            reason = st.text_input("Reason (TP/NEW/AVERAGE/etc.)")
-            submitted = st.form_submit_button("✅ Record Trade")
-            if submitted:
-                trade = dict(date=today_str(), side=side, symbol=symbol, shares=shares, price=price, fee=fee, reason=reason)
-                new_bal, new_pos, new_ledger = apply_trade_rows(SHEET, [trade], balances_df, positions_df, ledger_df)
-                st.success("Trade recorded!")
+        # ----------------------------------------
+        # New BUY signals with checkboxes
+        # ----------------------------------------
+        st.markdown("### 🆕 New BUY signals")
+        selected_buys = []
+        if sigs["new_buys"].empty:
+            st.write("No new BUY signals today.")
+        else:
+            for i, row in sigs["new_buys"].iterrows():
+                tick = st.checkbox(
+                    f"BUY {row['symbol']} @ {row['price']:.2f} (NEW)",
+                    key=f"buy_{i}"
+                )
+                st.write(f"Shares: {row['shares']}")
+                if tick:
+                    trade = dict(
+                        date=today_str(), side="BUY", symbol=row["symbol"],
+                        shares=int(row["shares"]), price=float(row["price"]),
+                        fee=params["fee"], reason="NEW"
+                    )
+                    selected_buys.append(trade)
+
+        st.markdown("---")
+
+        # ----------------------------------------
+        # Averaging signals with checkboxes
+        # ----------------------------------------
+        st.markdown("### ➕ Averaging signals")
+        selected_avgs = []
+        if sigs["averaging"].empty:
+            st.write("No averaging opportunities today.")
+        else:
+            for i, row in sigs["averaging"].iterrows():
+                tick = st.checkbox(
+                    f"AVERAGE {row['symbol']} @ {row['price']:.2f}",
+                    key=f"avg_{i}"
+                )
+                st.write(f"Shares: {row['shares']}")
+                if tick:
+                    trade = dict(
+                        date=today_str(), side="BUY", symbol=row["symbol"],
+                        shares=int(row["shares"]), price=float(row["price"]),
+                        fee=params["fee"], reason="AVERAGE"
+                    )
+                    selected_avgs.append(trade)
+
+        # ----------------------------------------
+        # Confirm selected trades
+        # ----------------------------------------
+        if st.button("✅ Confirm Selected Trades"):
+            all_trades = selected_sells + selected_buys + selected_avgs
+            if all_trades:
+                new_bal, new_pos, new_ledger = apply_trade_rows(SHEET, all_trades, balances_df, positions_df, ledger_df)
+                st.success(f"Recorded {len(all_trades)} trades.")
+            else:
+                st.warning("No trades selected.")
+
+    # ----------------------------------------
+    # Funds Management (separate section)
+    # ----------------------------------------
+    st.markdown("## 💰 Funds Management")
+    with st.form("funds_form"):
+        action = st.selectbox("Action", ["FUND_IN","FUND_OUT"])
+        amount = st.number_input("Amount (₹)", min_value=1000, step=500)
+        submit_f = st.form_submit_button("Apply")
+        if submit_f:
+            trade = dict(date=today_str(), side=action, symbol="", shares=0,
+                         price=0, fee=0, reason="Funds", amount=amount)
+            new_bal, new_pos, new_ledger = apply_trade_rows(SHEET, [trade], balances_df, positions_df, ledger_df)
+            st.success(f"Funds {action} of ₹{amount} recorded.")
 
 # ============ TAB 2: My Portfolio ==================
 with tab2:
@@ -701,3 +769,4 @@ with tab3:
             ax.hist(ledger_df["realized_pnl"].dropna(), bins=30, color="blue", alpha=0.6)
             ax.set_title("Realized PnL Distribution")
             st.pyplot(fig)
+
