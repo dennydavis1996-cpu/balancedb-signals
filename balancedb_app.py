@@ -120,12 +120,11 @@ def load_all(sheet_url):
     }
 
 # ----------------- Sidebar: Portfolio Selector (with persistence) -----------------
-
-# Initialize query params if not set
+# If no query param is set, default to Wife Portfolio
 if "portfolio" not in st.query_params:
-    st.query_params["portfolio"] = "My Portfolio"   # default
+    st.query_params["portfolio"] = "Wife Portfolio"   # ✅ set wife as default
 
-# Sidebar radio with persistent default
+# Sidebar radio
 portfolio_choice = st.sidebar.radio(
     "Choose portfolio:",
     ["My Portfolio", "Wife Portfolio"],
@@ -133,10 +132,10 @@ portfolio_choice = st.sidebar.radio(
     key="portfolio_choice"
 )
 
-# Update the query param when user changes selection
+# Update query param to persist choice
 st.query_params["portfolio"] = portfolio_choice
 
-# Select appropriate Sheet URL
+# Select corresponding Google Sheet
 if portfolio_choice == "My Portfolio":
     SHEET_URL = st.secrets["my_sheet_url"]
 else:
@@ -777,6 +776,7 @@ with tab3:
             ax.hist(ledger_df["realized_pnl"].dropna(), bins=30, color="blue", alpha=0.6)
             ax.set_title("Realized PnL Distribution")
             st.pyplot(fig)
+
 
 
 
