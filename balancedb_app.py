@@ -1,31 +1,34 @@
-# ==================================================
-# Balanced_B Signals — NIFTY100
-# Streamlit App with Google Sheets Integration
-# FULL STRATEGY LOGIC (identical to backtest engine)
-# ==================================================
+###########################
+# balancedb_app.py - Part 1
+# Imports, setup, Google Sheets integration
+###########################
 
-import streamlit as st
-import pandas as pd, numpy as np
-import yfinance as yf
-import gspread
-from oauth2client.service_account import ServiceAccountCredentials
-from datetime import datetime, timedelta
-import matplotlib.pyplot as plt
+import streamlit as st                 # Streamlit for the web app UI
+import pandas as pd                    # Pandas for dataframes
+import numpy as np                     # Numpy for math
+import yfinance as yf                  # Yahoo Finance for market data
+import datetime as dt                  # Handling datetime
+import matplotlib.pyplot as plt        # Charting
+import gspread                         # Google Sheets API
+from google.oauth2.service_account import Credentials   # Auth
+from gspread_dataframe import set_with_dataframe        # Write dataframes
+import requests, re, io                # For NSE/Wikipedia scraping, etc.
 
-# ----------------- PAGE SETUP -----------------
+# ----------------- Streamlit Setup -----------------
 st.set_page_config(
     page_title="Balanced_B Signals — NIFTY100",
+    page_icon="📈",
     layout="wide",
-    initial_sidebar_state="expanded"
 )
-st.title("📈 Balanced_B Signals — NIFTY100")
 
-# ----------------- DEFAULT PARAMS -----------------
-DEFAULTS = dict(
-    base_capital=500000,
+st.title("Balanced_B Signals — NIFTY100 📊")
+st.caption("Live portfolio manager, Google Sheets backend, full Balanced_B logic")
+
+# ----------------- Constants / Defaults -----------------
+DEFAULT_PARAMS = dict(
+    base_capital=500_000,
     fee=0.0011,
     ma=20,
-    use_zscore=True,
     bottom_n=16,
     max_new_buys=3,
     avg_dd=0.035,
@@ -38,195 +41,663 @@ DEFAULTS = dict(
     regime_buffer=0.003,
     divisor=30,
     divisor_bear=38,
-    lookback_days=420,
     min_turnover_cr=8.0,
     turnover_window=20,
-    apply_turnover_to_averaging=True
+    lookback_days=420,
 )
 
-NIFTY_INDEX = "^NSEI"
-N100_URL = "https://archives.nseindia.com/content/indices/ind_nifty100list.csv"
-
-# ----------------- GOOGLE SHEETS -----------------
+# ----------------- Google Sheets Integration -----------------
 def _service_account():
+    """
+    Authenticate with Google Sheets using service account stored in Streamlit secrets.
+    Place your service account JSON inside `.streamlit/secrets.toml` as:
+    gcp_service_account = { type="service_account", project_id="...", private_key="...", ... }
+    """
     creds_dict = st.secrets["gcp_service_account"]
-    scope=["https://spreadsheets.google.com/feeds","https://www.googleapis.com/auth/drive"]
-    creds=ServiceAccountCredentials.from_json_keyfile_dict(creds_dict,scope)
-    return gspread.authorize(creds)
+    creds = Credentials.from_service_account_info(
+        creds_dict,
+        scopes=["https://www.googleapis.com/auth/spreadsheets",
+                "https://www.googleapis.com/auth/drive"],
+    )
+    client = gspread.authorize(creds)
+    return client
 
-def open_sheet(url): return _service_account().open_by_url(url)
+def open_sheet(url):
+    """
+    Open Google Sheet by URL. Returns gspread Spreadsheet object.
+    """
+    client = _service_account()
+    try:
+        sh = client.open_by_url(url)
+        return sh
+    except Exception as e:
+        st.error(f"❌ Could not open sheet: {e}")
+        st.stop()
 
 def ensure_tabs(sh):
-    schemas={
-        "balances":["cash","base_capital","realized","fees_paid","last_update"],
-        "positions":["symbol","shares","avg_cost","last_buy","open_date","open_idx"],
-        "ledger":["date","side","symbol","shares","price","gross","fee","cash_before","cash_after","realized_pnl","holding_days","type"],
-        "config":["param","value"],
-        "daily_equity":["date","equity","cash","invested","exposure","positions","fees_cum","benchmark"],
+    """
+    Ensure required tabs exist: balances, positions, ledger, config, daily_equity.
+    If missing, create with correct schema.
+    """
+    required = {
+        "balances": ["cash", "base_capital", "realized", "fees_paid", "last_update"],
+        "positions": ["symbol", "shares", "avg_cost", "last_buy", "open_date"],
+        "ledger": ["date", "side", "symbol", "shares", "price", "fee", "reason", "realized_pnl", "cash_before", "cash_after", "holding_days"],
+        "config": list(DEFAULT_PARAMS.keys()),
+        "daily_equity": ["date", "equity", "cash", "invested", "exposure", "source"],
     }
-    for tab,cols in schemas.items():
-        try: sh.worksheet(tab)
-        except gspread.exceptions.WorksheetNotFound:
-            ws=sh.add_worksheet(title=tab,rows=1000,cols=len(cols)); ws.append_row(cols)
+    existing_titles = [ws.title for ws in sh.worksheets()]
+    for tab, cols in required.items():
+        if tab not in existing_titles:
+            ws = sh.add_worksheet(title=tab, rows="1000", cols=str(len(cols)))
+            ws.append_row(cols)  # header row
+            st.info(f"Created missing tab: {tab}")
 
-def read_tab(sh,tab): return pd.DataFrame(sh.worksheet(tab).get_all_records())
-def save_df(sh,tab,df):
-    ws=sh.worksheet(tab); ws.clear()
-    if not df.empty: ws.update([df.columns.values.tolist()]+df.astype(str).values.tolist())
-    else: ws.update([[]])
+def save_df(sh, tab, df):
+    """
+    Save DataFrame to a specific tab, overwriting existing.
+    """
+    ws = sh.worksheet(tab)
+    ws.clear()
+    set_with_dataframe(ws, df.reset_index(drop=True))
 
-# ----------------- MARKET DATA -----------------
-@st.cache_data(ttl=300)
-def safe_yf_download(symbols,start,end):
-    try: return yf.download(symbols,start=start,end=end,progress=False,auto_adjust=False)
-    except Exception as e: st.warning(f"⚠️ Yahoo error: {e}"); return pd.DataFrame()
+def load_tab(sh, tab):
+    """
+    Read a tab into a DataFrame. Returns empty DF if missing or only header.
+    """
+    try:
+        ws = sh.worksheet(tab)
+        data = ws.get_all_records()
+        if not data:
+            return pd.DataFrame(columns=ws.row_values(1))
+        return pd.DataFrame(data)
+    except Exception:
+        return pd.DataFrame()
 
-def fetch_nifty100_symbols():
-    try: df=pd.read_csv(N100_URL); return [s+".NS" for s in df["Symbol"].dropna()]
-    except Exception: st.error("NIFTY100 list fetch failed."); return []
+def load_all(sh):
+    """
+    Load all relevant tabs as dict of DataFrames.
+    """
+    return {
+        "balances": load_tab(sh, "balances"),
+        "positions": load_tab(sh, "positions"),
+        "ledger": load_tab(sh, "ledger"),
+        "config": load_tab(sh, "config"),
+        "daily_equity": load_tab(sh, "daily_equity"),
+    }
 
-# ----------------- SIGNAL GENERATION -----------------
-def compute_signals(prices, vols, bench, config, positions, balances):
-    ma=prices.rolling(config["ma"]).mean()
-    std=prices.rolling(config["ma"]).std()
-    bench_ma=bench.rolling(config["regime_filter_ma"]).mean()
-    regime_ok = bench.iloc[-1] >= bench_ma.iloc[-1]*(1+config["regime_buffer"])
+# ----------------- Sidebar: Portfolio Selector -----------------
+st.sidebar.header("Portfolio Selection")
+portfolio_choice = st.sidebar.radio("Choose portfolio:", ["My Portfolio", "Wife Portfolio"])
 
-    turnover=(prices*vols)/1e7
-    med_turn=turnover.rolling(config["turnover_window"]).median()
+# Expect the secrets.toml to contain:
+# my_sheet_url = "https://docs.google.com/..."
+# wife_sheet_url = "https://docs.google.com/..."
 
-    last=prices.iloc[-1]; ma_last=ma.iloc[-1]; std_last=std.iloc[-1]; liq_today=med_turn.iloc[-1]
+if portfolio_choice == "My Portfolio":
+    SHEET_URL = st.secrets["my_sheet_url"]
+else:
+    SHEET_URL = st.secrets["wife_sheet_url"]
 
-    signals={"SELL":[],"TIME_STOP":[],"NEW":[],"AVERAGE":[]}
+SHEET = open_sheet(SHEET_URL)
+ensure_tabs(SHEET)
+TABS = load_all(SHEET)
+###########################
+# balancedb_app.py - Part 2
+# Market data functions
+###########################
 
-    # --- SELL (TP + time stop) obeying max_sells_per_day ---
-    sells=[]
-    for sym,pos in positions.iterrows():
-        price=last.get(sym,np.nan)
-        if pd.isna(price): continue
-        r=price/pos["avg_cost"]-1
-        age=(datetime.today().date()-pd.to_datetime(pos["open_date"]).date()).days
-        if r>=config["take_profit"]: sells.append((r,sym,price,"TP",age))
-        elif age>=config["time_stop_days"]: sells.append((r,sym,price,"TIME_STOP",age))
-    sells=sorted(sells,key=lambda x:x[0],reverse=True)[:config["max_sells_per_day"]]
-    for r,sym,price,typ,age in sells: signals[typ if typ=="TIME_STOP" else "SELL"].append((sym,price,typ,age))
+# Helper to normalize symbols (remove spaces/punct)
+def _clean_symbol_keep_punct(s):
+    return re.sub(r'[^A-Za-z0-9\-\&\.]+', '', str(s)).upper()
 
-    # --- BUY eligibility ---
-    def liq_ok(sym): return liq_today.get(sym,np.nan)>=config["min_turnover_cr"]
-    elig=[c for c in prices.columns if pd.notna(ma_last.get(c)) and pd.notna(last[c]) and last[c]<ma_last[c] and liq_ok(c)]
+def _norm(s):
+    return re.sub(r'[^a-z0-9]', '', str(s).lower())
 
-    if config["use_zscore"]:
-        zmap={c:(last[c]-ma_last[c])/std_last[c] for c in elig if pd.notna(std_last.get(c)) and std_last[c]>0}
-        ranked=sorted(zmap,key=zmap.get)[:config["bottom_n"]]
-    else:
-        dist=last/ma_last-1; ranked=sorted(elig,key=lambda c:dist[c])[:config["bottom_n"]]
+# --------------------------------------------------
+# Fetch NIFTY constituent list
+# --------------------------------------------------
 
-    if regime_ok: # new buys allowed only if bull regime
-        new_buys=[c for c in ranked if c not in positions.index][:config["max_new_buys"]]
-        for sym in new_buys: signals["NEW"].append((sym,last[sym],"NEW"))
+def fetch_index_current(index_name="NIFTY100"):
+    """
+    Fetch current index constituents.
+    Priority: NSE official CSV -> fallback Wikipedia table.
+    Returns: set(symbols), dict company_name->symbol
+    """
+    idx = index_name.upper().replace(" ", "")
+    file_map = {
+        "NIFTY50": "ind_nifty50list.csv",
+        "NIFTY100": "ind_nifty100list.csv",
+        "NIFTY200": "ind_nifty200list.csv",
+    }
+    # Try NSE CSV
+    if idx in file_map:
+        url = f"https://archives.nseindia.com/content/indices/{file_map[idx]}"
+        try:
+            r = requests.get(url, headers={"User-Agent":"Mozilla/5.0"}, timeout=20)
+            r.raise_for_status()
+            df = pd.read_csv(io.StringIO(r.content.decode("utf-8")))
+            sym_col = [c for c in df.columns if re.search(r"(symbol|ticker|nse)", c, re.I)][0]
+            name_cols = [c for c in df.columns if re.search(r"(company|name)", c, re.I)]
+            name_col = name_cols[0] if name_cols else None
+            df[sym_col] = df[sym_col].apply(_clean_symbol_keep_punct)
+            return set(df[sym_col].dropna().astype(str)), (
+                {_norm(n): s for n,s in zip(df[name_col], df[sym_col])} if name_col else {}
+            )
+        except Exception as e:
+            st.warning(f"⚠️ NSE fetch failed ({e}), falling back to Wikipedia.")
 
-    # --- Averaging ---
-    for sym,pos in positions.iterrows():
-        price=last.get(sym,np.nan)
-        if pd.isna(price): continue
-        if config["apply_turnover_to_averaging"] and not liq_ok(sym): continue
-        if regime_ok or (not config["averaging_requires_regime"]):
-            if price<=pos["last_buy"]*(1-config["avg_dd"]):
-                if not regime_ok:
-                    m=ma_last.get(sym); s=std_last.get(sym)
-                    if pd.notna(m) and pd.notna(s) and s>0 and (price-m)/s <= config["avg_in_bear_z_thresh"]:
-                        signals["AVERAGE"].append((sym,price,"AVERAGE_BEAR"))
+    url_map = {
+        "NIFTY50":"https://en.wikipedia.org/wiki/NIFTY_50",
+        "NIFTY100":"https://en.wikipedia.org/wiki/NIFTY_100",
+        "NIFTY200":"https://en.wikipedia.org/wiki/NIFTY_200",
+    }
+    url = url_map.get(idx, url_map["NIFTY100"])
+    try:
+        tables = pd.read_html(url)
+        for df in tables:
+            cols = [c.lower() for c in df.columns]
+            if any("symbol" in c or "ticker" in c or "nse" in c for c in cols) and \
+               any("company" in c or "name" in c for c in cols) and len(df) >= 40:
+                sym_col = [c for c in df.columns if re.search(r"(symbol|ticker|nse)", c, re.I)][0]
+                name_col = [c for c in df.columns if re.search(r"(company|name)", c, re.I)][0]
+                df[sym_col] = df[sym_col].apply(_clean_symbol_keep_punct)
+                return set(df[sym_col].tolist()), {_norm(n): s for n,s in zip(df[name_col], df[sym_col])}
+    except Exception as e:
+        st.error(f"❌ Failed fetching symbols from Wikipedia too: {e}")
+        st.stop()
+    return set(), {}
+
+# --------------------------------------------------
+# Safe Yahoo Finance download
+# --------------------------------------------------
+
+def safe_yf_download(tickers, start, end, fields=("Adj Close","Volume"), retry=2):
+    """
+    Download data safely from Yahoo Finance for given tickers.
+    Handles multi-index, retries, errors.
+    Returns dict(field->DataFrame)
+    """
+    tickers = list(dict.fromkeys(tickers))
+    out = {f: [] for f in fields}
+
+    for attempt in range(retry):
+        try:
+            df = yf.download(tickers, start=start, end=end, progress=False, auto_adjust=False)
+            # Handle MultiIndex columns
+            if isinstance(df.columns, pd.MultiIndex):
+                for f in fields:
+                    sub = df.get(f)
+                    if sub is None: continue
+                    if isinstance(sub, pd.Series): sub = sub.to_frame()
+                    out[f].append(sub)
+            else:
+                for f in fields:
+                    sub = df.get(f)
+                    if sub is None: continue
+                    if isinstance(sub, pd.Series): sub = sub.to_frame()
+                    out[f].append(sub)
+            break
+        except Exception as e:
+            st.warning(f"⚠️ Yahoo download failed (attempt {attempt+1}): {e}")
+    # Concatenate collected data
+    for f in fields:
+        if out[f]:
+            joined = pd.concat(out[f], axis=1)
+            joined = joined.loc[:, ~joined.columns.duplicated()].sort_index()
+            out[f] = joined
+        else:
+            out[f] = pd.DataFrame()
+    return out
+
+# --------------------------------------------------
+# Load Market Data (benchmark + NIFTY100 prices/volumes/turnover)
+# --------------------------------------------------
+
+@st.cache_data(show_spinner=False, ttl=60*30)
+def load_market_data(start=None, end=None):
+    """
+    Load NIFTY100 price/volume and benchmark (^NSEI).
+    Computes 20D rolling turnover median for liquidity filter.
+    Cached for 30 minutes.
+    """
+    end = end or dt.date.today().strftime("%Y-%m-%d")
+    start = start or (dt.date.today() - dt.timedelta(days=DEFAULT_PARAMS["lookback_days"])).strftime("%Y-%m-%d")
+
+    # Get symbols
+    syms, _ = fetch_index_current("NIFTY100")
+    tickers = sorted(s + ".NS" for s in syms)
+
+    # Benchmark (NIFTY 50 index proxy = ^NSEI)
+    bench = safe_yf_download(["^NSEI"], start, end, fields=("Adj Close",))["Adj Close"].squeeze()
+    bench = bench.rename("NIFTY50").dropna()
+
+    # Prices + Volumes
+    raw = safe_yf_download(tickers, start, end, fields=("Adj Close","Volume"))
+    prices = raw["Adj Close"].reindex(bench.index)
+    vols   = raw["Volume"].reindex(bench.index)
+
+    # Turnover (₹ Cr) = Price*Volume / 1e7
+    turnover = (prices * vols) / 1e7
+    med_turnover = turnover.rolling(DEFAULT_PARAMS["turnover_window"], min_periods=DEFAULT_PARAMS["turnover_window"]).median()
+
+    return dict(bench=bench, prices=prices, vols=vols, med_turnover=med_turnover, tickers=tickers)
+###########################
+# balancedb_app.py - Part 3
+# Portfolio logic (positions, ledger, performance)
+###########################
+
+# --------------------------------------------------
+# Helper: today’s date string
+# --------------------------------------------------
+def today_str():
+    return dt.date.today().strftime("%Y-%m-%d")
+
+# --------------------------------------------------
+# Ledger + balances update (apply trades)
+# --------------------------------------------------
+def apply_trade_rows(sh, trades, balances_df, positions_df, ledger_df):
+    """
+    Apply a list of trades (as dict rows) and update balances,
+    positions, and ledger accordingly. Save back to Google Sheets.
+    Each `trade` dict should have:
+    - date, side (BUY/SELL/FUND_IN/FUND_OUT), symbol, shares, price, fee, reason
+    """
+    cash = float(balances_df.iloc[0]["cash"]) if not balances_df.empty else DEFAULT_PARAMS["base_capital"]
+    realized = float(balances_df.iloc[0].get("realized", 0)) if not balances_df.empty else 0
+    fees_paid = float(balances_df.iloc[0].get("fees_paid", 0)) if not balances_df.empty else 0
+
+    for tr in trades:
+        sym, side = tr["symbol"], tr["side"]
+        shares, price, fee = tr["shares"], tr["price"], tr["fee"]
+        reason = tr.get("reason","")
+        date = tr.get("date", today_str())
+        cash_before = cash
+
+        if side == "BUY":
+            cost = shares*price + shares*price*fee
+            if cash >= cost:
+                cash -= cost
+                fees_paid += shares*price*fee
+                # Update/append position
+                if sym in positions_df["symbol"].values:
+                    pos = positions_df.loc[positions_df["symbol"]==sym].iloc[0]
+                    old_shares = int(pos["shares"])
+                    avg_cost = float(pos["avg_cost"])
+                    tot_cost = old_shares*avg_cost + shares*price
+                    new_shares = old_shares+shares
+                    new_avg = tot_cost / new_shares
+                    positions_df.loc[positions_df["symbol"]==sym, ["shares","avg_cost","last_buy","open_date"]] = [
+                        new_shares, new_avg, price, date
+                    ]
                 else:
-                    signals["AVERAGE"].append((sym,price,"AVERAGE"))
+                    new_row = dict(symbol=sym, shares=shares, avg_cost=price,
+                                   last_buy=price, open_date=date)
+                    positions_df = pd.concat([positions_df, pd.DataFrame([new_row])], ignore_index=True)
+            else:
+                st.warning(f"Not enough cash for BUY {sym} {shares}@{price}")
 
-    # --- Lot size from divisor ---
-    cap=float(balances.at[0,"base_capital"])+float(balances.at[0,"realized"])
-    lot_cash=cap/(config["divisor"] if regime_ok else config["divisor_bear"])
+        elif side == "SELL":
+            if sym in positions_df["symbol"].values:
+                pos = positions_df.loc[positions_df["symbol"]==sym].iloc[0]
+                held_shares = int(pos["shares"])
+                avg_cost = float(pos["avg_cost"])
+                if shares > held_shares:
+                    shares = held_shares  # can't sell more than owned
+                proceeds_gross = shares*price
+                fee_amt = proceeds_gross*fee
+                proceeds_net = proceeds_gross - fee_amt
+                pnl = proceeds_net - shares*avg_cost
+                cash += proceeds_net
+                realized += pnl
+                fees_paid += fee_amt
+                # reduce position
+                if shares == held_shares:
+                    positions_df = positions_df[positions_df["symbol"]!=sym]
+                else:
+                    positions_df.loc[positions_df["symbol"]==sym,"shares"] = held_shares-shares
+                holding_days = (dt.date.fromisoformat(date) - dt.date.fromisoformat(pos["open_date"])).days
+            else:
+                st.warning(f"No shares to sell for {sym}")
+                pnl, holding_days = 0, 0
+            # ledger entry append below
 
-    return signals,regime_ok,lot_cash
+        elif side == "FUND_IN":
+            cash += tr["amount"]
+        elif side == "FUND_OUT":
+            cash -= tr["amount"]
 
-# ----------------- PORTFOLIO VALUATION -----------------
-def rebuild_equity(prices,bench,positions,balances,ledger):
-    equity=[]; cash=balances.at[0,"cash"]; realized=balances.at[0,"realized"]; fees=balances.at[0,"fees_paid"]
-    daily=[]
-    for i,d in enumerate(prices.index):
-        row=prices.loc[d]; mv=0
-        for sym,pos in positions.iterrows():
-            if sym in row and not pd.isna(row[sym]):
-                mv+=row[sym]*pos["shares"]
-        eq=cash+realized+mv
-        equity.append(eq)
-        exposure=mv/eq if eq>0 else 0
-        daily.append([str(d.date()),eq,cash,mv,exposure,len(positions),fees,bench.get(d,np.nan) if bench is not None else np.nan])
-    return pd.DataFrame(daily,columns=["date","equity","cash","invested","exposure","positions","fees_cum","benchmark"]).set_index("date")
+        # Append to ledger
+        ledger_row = dict(date=date, side=side, symbol=sym, shares=shares, price=price,
+                          fee=fee, reason=reason, realized_pnl=locals().get("pnl",0),
+                          cash_before=cash_before, cash_after=cash, holding_days=locals().get("holding_days",0))
+        ledger_df = pd.concat([ledger_df, pd.DataFrame([ledger_row])], ignore_index=True)
 
-def compute_drawdown(eq): return eq/eq.cummax()-1
-def compute_cagr(eq):
-    start,end=eq.iloc[0],eq.iloc[-1]; years=(len(eq)/252)
-    return (end/start)**(1/years)-1 if years>0 else np.nan
-def compute_sharpe(rets): return (rets.mean()*252)/(rets.std()*np.sqrt(252)) if rets.std()>0 else np.nan
+    # Save updated DataFrames
+    balances_new = pd.DataFrame([dict(
+        cash=round(cash,2),
+        base_capital=DEFAULT_PARAMS["base_capital"],
+        realized=round(realized,2),
+        fees_paid=round(fees_paid,2),
+        last_update=today_str(),
+    )])
+    save_df(sh, "balances", balances_new)
+    save_df(sh, "positions", positions_df)
+    save_df(sh, "ledger", ledger_df)
 
-# ----------------- UI -----------------
-with st.sidebar:
-    st.header("⚙️ Settings")
-    sheet_url=st.text_input("Google Sheet URL","")
-    run_button=st.button("🔄 Run Scan")
+    return balances_new, positions_df, ledger_df
 
-if sheet_url:
-    sh=open_sheet(sheet_url); ensure_tabs(sh)
+# --------------------------------------------------
+# Valuations: positions with unrealized PnL
+# --------------------------------------------------
+def position_snapshot(positions_df, prices_row):
+    """
+    Join current market prices with positions to compute market value & unrealized PnL.
+    prices_row: Series with ticker->price at latest date
+    """
+    if positions_df.empty or prices_row is None: return pd.DataFrame()
+    holdings = []
+    for _, pos in positions_df.iterrows():
+        sym = pos["symbol"]
+        last_price = prices_row.get(sym, np.nan)
+        if pd.notna(last_price) and pos["shares"]>0:
+            mv = pos["shares"]*last_price
+            unr = (last_price - pos["avg_cost"]) * pos["shares"]
+            unr_pct = (last_price/pos["avg_cost"] - 1)*100 if pos["avg_cost"]>0 else np.nan
+            holdings.append(dict(symbol=sym, shares=int(pos["shares"]),
+                                 avg_cost=round(pos["avg_cost"],2),
+                                 last_price=round(last_price,2),
+                                 market_value=round(mv,2),
+                                 unrealized_pnl=round(unr,2),
+                                 unrealized_pct=round(unr_pct,2),
+                                 last_buy=pos["last_buy"], open_date=pos["open_date"]))
+    return pd.DataFrame(holdings).sort_values("market_value", ascending=False)
 
-    balances=read_tab(sh,"balances")
-    if balances.empty:
-        balances=pd.DataFrame([{"cash":DEFAULTS["base_capital"],"base_capital":DEFAULTS["base_capital"],"realized":0,"fees_paid":0,"last_update":str(datetime.today().date())}])
-        save_df(sh,"balances",balances)
+# --------------------------------------------------
+# Performance metrics
+# --------------------------------------------------
+def compute_drawdown(series):
+    cummax = series.cummax()
+    dd = series/cummax - 1
+    return dd
 
-    positions=read_tab(sh,"positions").set_index("symbol") if not read_tab(sh,"positions").empty else pd.DataFrame(columns=["shares","avg_cost","last_buy","open_date","open_idx"]).set_index(pd.Index([]))
-    config_df=read_tab(sh,"config"); config=DEFAULTS.copy()
-    for _,r in config_df.iterrows():
-        if r["param"] in config: config[r["param"]]=float(r["value"])
+def compute_cagr(start_val, end_val, days):
+    years = days/365.25
+    return (end_val/start_val)**(1/years)-1 if years>0 and start_val>0 else np.nan
 
-    tickers=fetch_nifty100_symbols(); end=datetime.today().date(); start=end-timedelta(days=int(config["lookback_days"]))
-    data=safe_yf_download(tickers+[NIFTY_INDEX],start,end)
-    prices=data["Adj Close"].dropna(axis=1,how="all") if not data.empty else pd.DataFrame()
-    vols=data["Volume"] if "Volume" in data else pd.DataFrame()
-    bench=prices[NIFTY_INDEX] if NIFTY_INDEX in prices else pd.Series()
+def compute_sharpe(returns):
+    if len(returns)<2: return np.nan
+    ann_vol = returns.std()*np.sqrt(252)
+    return (returns.mean()*252)/ann_vol if ann_vol>0 else np.nan
 
-    tabs=st.tabs(["📊 Run Signals","💼 Portfolio","📑 Reports"])
+def compute_xirr(cashflows):
+    """
+    Approximate XIRR (money-weighted return) using numpy. cashflows=[(date, amt)].
+    """
+    if not cashflows: return np.nan
+    days = np.array([(dt.datetime.strptime(str(d),"%Y-%m-%d")-dt.datetime.strptime(str(cashflows[0][0]),"%Y-%m-%d")).days for d,_ in cashflows])
+    amts = np.array([a for _,a in cashflows])
+    def npv(rate):
+        return np.sum(amts/((1+rate)**(days/365)))
+    try:
+        return np.irr(amts)  # quick hack, IRR not exact XIRR
+    except Exception:
+        return np.nan
+###########################
+# balancedb_app.py - Part 4
+# Signal generation (Balanced_B full rules)
+###########################
 
-    with tabs[0]:
-        st.subheader("Signals")
-        if run_button and not prices.empty:
-            sigs,regime_ok,lot_cash=compute_signals(prices,vols,bench,config,positions,balances)
-            st.write("Regime:", "Bullish ✅" if regime_ok else "Bearish ⚠️")
-            st.write("Lot Size (₹)",round(lot_cash,2))
-            st.write("SELL/TS",pd.DataFrame(sigs["SELL"]+sigs["TIME_STOP"],columns=["symbol","price","reason","age"]))
-            st.write("NEW BUY",pd.DataFrame(sigs["NEW"],columns=["symbol","price","reason"]))
-            st.write("AVERAGE",pd.DataFrame(sigs["AVERAGE"],columns=["symbol","price","reason"]))
+def compute_signals(market, positions_df, balances_df, params):
+    """
+    Compute signals using Balanced_B rules, identical to backtest logic.
+    Params come from Google Sheet config merged with DEFAULT_PARAMS.
+    Returns dict with 'sells', 'new_buys', 'averaging' DataFrames.
+    """
 
-    with tabs[1]:
-        st.subheader("Portfolio")
-        if not positions.empty and not prices.empty:
-            snaps=[]; last=prices.iloc[-1]
-            for sym,pos in positions.iterrows():
-                price=last.get(sym,np.nan)
-                if pd.isna(price): continue
-                mv=price*pos["shares"]; unr=(price-pos["avg_cost"])*pos["shares"]
-                snaps.append([sym,pos["shares"],pos["avg_cost"],price,mv,unr,(price/pos["avg_cost"]-1)*100])
-            df=pd.DataFrame(snaps,columns=["symbol","shares","avg_cost","last_price","market_value","unrealized_pnl","unrealized_pct"])
-            st.dataframe(df.set_index("symbol"))
-            eqdf=rebuild_equity(prices,bench,positions,balances,read_tab(sh,"ledger"))
-            st.line_chart(eqdf[["equity","benchmark"]].dropna())
-            st.area_chart(compute_drawdown(eqdf["equity"]))
-            rets=eqdf["equity"].pct_change().dropna()
-            st.write(f"CAGR: {compute_cagr(eqdf['equity']):.2%}, Sharpe: {compute_sharpe(rets):.2f}, MaxDD: {compute_drawdown(eqdf['equity']).min():.2%}")
+    bench = market["bench"]
+    prices = market["prices"]
+    vols = market["vols"]
+    med_turnover = market["med_turnover"]
+    today = bench.index[-1]
+    today_prices = prices.loc[today]
+    today_turnover = med_turnover.loc[today]
 
-    with tabs[2]:
-        st.subheader("Reports")
-        ledger=read_tab(sh,"ledger")
-        if not ledger.empty:
-            sells=ledger[ledger["side"]=="SELL"]
-            if not sells.empty:
-                sells["pnl_pct"]=sells["realized_pnl"]/(sells["gross"]).replace(0,np.nan)
-                fig,ax=plt.subplots(figsize=(6,3))
-                ax.hist(sells["pnl_pct"].dropna()*100,bins=40,color="tab:blue",alpha=0.7)
-                ax.set_title("Realized Trade PnL %"); st.pyplot(fig)
+    fee = params["fee"]
+    cash = float(balances_df.iloc[0]["cash"]) if not balances_df.empty else params["base_capital"]
+    realized = float(balances_df.iloc[0].get("realized",0)) if not balances_df.empty else 0
+    portfolio_val = cash + (positions_df.merge(today_prices.to_frame("price"), left_on="symbol", right_index=True)["price"]*positions_df["shares"]).sum() if not positions_df.empty else cash
+
+    # --- Regime detection ---
+    bench_ma = bench.rolling(params["regime_filter_ma"], min_periods=params["regime_filter_ma"]).mean()
+    regime_ok = bool(bench.iloc[-1] >= bench_ma.iloc[-1]*(1+params["regime_buffer"]))
+    div_today = params["divisor"] if regime_ok else params["divisor_bear"]
+    lot_cash = portfolio_val / div_today
+
+    # --- Compute moving avg and std for z-score ---
+    ma = prices.rolling(params["ma"], min_periods=params["ma"]).mean()
+    std = prices.rolling(params["ma"], min_periods=params["ma"]).std()
+    ma_today = ma.loc[today]; std_today = std.loc[today]
+
+    # ---------------- SELL signals ----------------
+    sell_signals = []
+    for _, pos in positions_df.iterrows():
+        sym = pos["symbol"]
+        shares = int(pos["shares"])
+        buy_price = float(pos["avg_cost"])
+        px = today_prices.get(sym,np.nan)
+        if pd.isna(px) or shares<=0: continue
+        ret = px/buy_price - 1
+
+        # profit take
+        if ret >= params["take_profit"]:
+            sell_signals.append(dict(symbol=sym, reason="TP", shares=shares, price=px, gain_pct=round(ret*100,2)))
+
+        # time stop
+        age = (today - pd.to_datetime(pos["open_date"])).days
+        if age >= params["time_stop_days"]:
+            sell_signals.append(dict(symbol=sym, reason="TIME_STOP", shares=shares, price=px, gain_pct=round(ret*100,2)))
+
+    sells_df = pd.DataFrame(sell_signals) if sell_signals else pd.DataFrame(columns=["symbol","reason","shares","price","gain_pct"])
+    if len(sells_df)>params["max_sells_per_day"]:
+        sells_df = sells_df.sort_values("gain_pct",ascending=False).head(params["max_sells_per_day"])
+
+    # ---------------- BUY signals: ranking by Z-score ----------------
+    elig = [c for c in prices.columns
+            if pd.notna(ma_today.get(c)) and pd.notna(today_prices.get(c))
+            and today_prices[c]<ma_today[c]                           # price below MA
+            and today_turnover.get(c,0)>=params["min_turnover_cr"]]   # liquidity
+
+    if params.get("use_zscore",True):
+        zmap = {c:(today_prices[c]-ma_today[c])/std_today[c]
+                for c in elig if pd.notna(std_today.get(c)) and std_today[c]>0}
+        ranked = sorted(zmap, key=zmap.get)[:params["bottom_n"]]
+    else:
+        dist = today_prices/ma_today - 1
+        ranked = sorted(elig, key=lambda c: dist[c])[:params["bottom_n"]] if elig else []
+
+    new_buys = []
+    if regime_ok:
+        for sym in ranked:
+            if sym in positions_df["symbol"].values: continue
+            px = today_prices.get(sym,np.nan)
+            if pd.notna(px):
+                shares = int(lot_cash//(px*(1+fee)))
+                if shares>0:
+                    new_buys.append(dict(symbol=sym, price=px, shares=shares, reason="NEW"))
+        if len(new_buys)>params["max_new_buys"]:
+            new_buys = new_buys[:params["max_new_buys"]]
+
+    new_buys_df = pd.DataFrame(new_buys) if new_buys else pd.DataFrame(columns=["symbol","price","shares","reason"])
+
+    # ---------------- Averaging signals ----------------
+    avgs=[]
+    if regime_ok:
+        # Bulls: averaging allowed if price dropped by avg_dd vs last_buy
+        for _, pos in positions_df.iterrows():
+            sym=pos["symbol"]; last_buy=pos["last_buy"]
+            px=today_prices.get(sym,np.nan)
+            if pd.notna(px) and px<=last_buy*(1-params["avg_dd"]):
+                # turnover rule
+                if today_turnover.get(sym,0)>=params["min_turnover_cr"]:
+                    shares=int(lot_cash//(px*(1+fee)))
+                    if shares>0: avgs.append(dict(symbol=sym,price=px,shares=shares,reason="AVERAGE"))
+    else:
+        # Bears: stricter: requires Z-score below threshold also
+        for _, pos in positions_df.iterrows():
+            sym=pos["symbol"]; last_buy=pos["last_buy"]
+            px=today_prices.get(sym,np.nan)
+            if pd.isna(px): continue
+            m, s=ma_today.get(sym), std_today.get(sym)
+            if pd.isna(m) or pd.isna(s) or s<=0: continue
+            z=(px-m)/s
+            if z<=params["avg_in_bear_z_thresh"] and px<=last_buy*(1-params["avg_dd"]):
+                if today_turnover.get(sym,0)>=params["min_turnover_cr"]:
+                    shares=int(lot_cash//(px*(1+fee)))
+                    if shares>0: avgs.append(dict(symbol=sym,price=px,shares=shares,reason="AVERAGE"))
+
+    avgs_df=pd.DataFrame(avgs) if avgs else pd.DataFrame(columns=["symbol","price","shares","reason"])
+
+    return dict(sells=sells_df, new_buys=new_buys_df, averaging=avgs_df, regime="Bull" if regime_ok else "Bear", lot_cash=lot_cash)
+###########################
+# balancedb_app.py - Part 5
+# Streamlit UI
+###########################
+
+# Load config parameters (from sheet or defaults)
+def load_params(sh):
+    cfg = load_tab(sh, "config")
+    if cfg.empty: 
+        return DEFAULT_PARAMS.copy()
+    params = DEFAULT_PARAMS.copy()
+    for k in params:
+        if k in cfg.columns and not pd.isna(cfg.iloc[0][k]):
+            params[k] = float(cfg.iloc[0][k]) if re.search(r'[0-9]', str(cfg.iloc[0][k])) else cfg.iloc[0][k]
+    return params
+
+# ---------------------- UI -------------------------
+tab1, tab2, tab3 = st.tabs(["⚡ Run Signals", "📂 My Portfolio", "📑 Reports & Analytics"])
+
+# ============ TAB 1: Run Signals ===================
+with tab1:
+    st.subheader("Run Balanced_B signal scan")
+
+    params = load_params(SHEET)
+    market = load_market_data()
+    balances_df, positions_df, ledger_df = TABS["balances"], TABS["positions"], TABS["ledger"]
+
+    if st.button("🔍 Run scan now"):
+        sigs = compute_signals(market, positions_df, balances_df, params)
+
+        st.info(f"Market Regime: **{sigs['regime']}** | Lot cash: ₹{sigs['lot_cash']:.0f}")
+
+        c1, c2, c3 = st.columns(3)
+        with c1:
+            st.markdown("### 🚪 SELL signals")
+            st.dataframe(sigs["sells"])
+        with c2:
+            st.markdown("### 🆕 New BUY signals")
+            st.dataframe(sigs["new_buys"])
+        with c3:
+            st.markdown("### ➕ Averaging signals")
+            st.dataframe(sigs["averaging"])
+
+        st.markdown("---")
+        st.markdown("### 📋 Record Trades")
+
+        with st.form("trade_form"):
+            side = st.selectbox("Side", ["BUY","SELL","FUND_IN","FUND_OUT"])
+            symbol = st.text_input("Symbol (e.g. RELIANCE.NS)")
+            price = st.number_input("Price", min_value=0.0, step=0.1)
+            shares = st.number_input("Shares", min_value=0, step=1)
+            fee = params["fee"]
+            reason = st.text_input("Reason (TP/NEW/AVERAGE/etc.)")
+            submitted = st.form_submit_button("✅ Record Trade")
+            if submitted:
+                trade = dict(date=today_str(), side=side, symbol=symbol, shares=shares, price=price, fee=fee, reason=reason)
+                new_bal, new_pos, new_ledger = apply_trade_rows(SHEET, [trade], balances_df, positions_df, ledger_df)
+                st.success("Trade recorded!")
+
+# ============ TAB 2: My Portfolio ==================
+with tab2:
+    st.subheader("Portfolio Snapshot")
+    balances_df = load_tab(SHEET,"balances")
+    positions_df = load_tab(SHEET,"positions")
+    ledger_df = load_tab(SHEET,"ledger")
+
+    st.write("**Balances:**")
+    st.dataframe(balances_df)
+
+    # Holdings with market values
+    market = load_market_data()
+    lastrow = market["prices"].iloc[-1]
+    holdings = position_snapshot(positions_df, lastrow)
+    st.write("**Positions (with Unrealized PnL):**")
+    st.dataframe(holdings)
+
+    # Equity curve reconstruction
+    df_daily = load_tab(SHEET,"daily_equity")
+    if not df_daily.empty:
+        st.line_chart(df_daily.set_index("date")[["equity","cash","invested"]])
+
+    # Performance metrics computed from equity
+    if not df_daily.empty:
+        eq = pd.to_numeric(df_daily["equity"])
+        eq.index = pd.to_datetime(df_daily["date"])
+        start_val, end_val = eq.iloc[0], eq.iloc[-1]
+        cagr = compute_cagr(start_val,end_val,(eq.index[-1]-eq.index[0]).days)
+        rets = eq.pct_change().dropna()
+        sharpe = compute_sharpe(rets)
+        dd = compute_drawdown(eq).min()
+        st.metric("CAGR", f"{cagr*100:.2f}%")
+        st.metric("Sharpe", f"{sharpe:.2f}")
+        st.metric("Max Drawdown", f"{dd*100:.2f}%")
+
+    # Downloads
+    st.markdown("---")
+    st.write("📥 Download Data")
+    st.download_button("Ledger CSV", ledger_df.to_csv(index=False), "ledger.csv")
+    st.download_button("Positions CSV", positions_df.to_csv(index=False), "positions.csv")
+    if not df_daily.empty:
+        st.download_button("Daily Equity CSV", df_daily.to_csv(index=False), "daily_equity.csv")
+
+# ============ TAB 3: Reports & Analytics ===========
+with tab3:
+    st.subheader("Reports & Analytics")
+
+    df_daily = load_tab(SHEET,"daily_equity")
+    ledger_df = load_tab(SHEET,"ledger")
+    if df_daily.empty or ledger_df.empty:
+        st.warning("No data yet. Record trades first.")
+    else:
+        eq = pd.to_numeric(df_daily["equity"])
+        eq.index = pd.to_datetime(df_daily["date"])
+        dd = compute_drawdown(eq)
+
+        # Drawdown chart
+        fig, ax = plt.subplots(figsize=(8,3))
+        ax.fill_between(dd.index, dd.values,0, color="red", alpha=0.4)
+        ax.set_title("Drawdown curve")
+        st.pyplot(fig)
+
+        # Rolling 1Y CAGR
+        if len(eq)>252:
+            roll_cagr = (eq/eq.shift(252))**(1)-1
+            fig, ax = plt.subplots(figsize=(8,3))
+            ax.plot(roll_cagr.index, roll_cagr.values)
+            ax.set_title("Rolling 1Y CAGR")
+            st.pyplot(fig)
+
+        # Exposure plot
+        exp = pd.to_numeric(df_daily["exposure"])
+        fig, ax = plt.subplots(figsize=(8,3))
+        ax.plot(df_daily["date"], exp)
+        ax.set_title("Exposure over time")
+        st.pyplot(fig)
+
+        # Histogram of realized PnL
+        if "realized_pnl" in ledger_df.columns and not ledger_df["realized_pnl"].dropna().empty:
+            fig, ax = plt.subplots(figsize=(6,4))
+            ax.hist(ledger_df["realized_pnl"].dropna(), bins=30, color="blue", alpha=0.6)
+            ax.set_title("Realized PnL Distribution")
+            st.pyplot(fig)
