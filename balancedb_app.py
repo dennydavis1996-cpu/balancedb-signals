@@ -97,11 +97,9 @@ def save_df(sh, tab, df):
     ws.clear()
     set_with_dataframe(ws, df.reset_index(drop=True))
 
-@st.cache_data(ttl=60)   # ✅ cache reads for 60s
-def load_tab(sh, tab):
-    """
-    Read a tab into a DataFrame. CACHED for 60 seconds to reduce API hits.
-    """
+@st.cache_data(ttl=60)
+def load_tab(sheet_url, tab):
+    sh = open_sheet(sheet_url)
     try:
         ws = sh.worksheet(tab)
         data = ws.get_all_records()
@@ -111,18 +109,14 @@ def load_tab(sh, tab):
     except Exception:
         return pd.DataFrame()
 
-@st.cache_data(ttl=60)   # ✅ cache all tabs for 60s
-def load_all(sh):
-    """
-    Load all relevant tabs (balances, positions, ledger, config, daily_equity).
-    Cached for 60 seconds.
-    """
+@st.cache_data(ttl=60)
+def load_all(sheet_url):
     return {
-        "balances": load_tab(sh, "balances"),
-        "positions": load_tab(sh, "positions"),
-        "ledger": load_tab(sh, "ledger"),
-        "config": load_tab(sh, "config"),
-        "daily_equity": load_tab(sh, "daily_equity"),
+        "balances": load_tab(sheet_url, "balances"),
+        "positions": load_tab(sheet_url, "positions"),
+        "ledger": load_tab(sheet_url, "ledger"),
+        "config": load_tab(sheet_url, "config"),
+        "daily_equity": load_tab(sheet_url, "daily_equity"),
     }
 
 # ----------------- Sidebar: Portfolio Selector (with persistence) -----------------
@@ -150,7 +144,7 @@ else:
 
 SHEET = open_sheet(SHEET_URL)
 ensure_tabs(SHEET)
-TABS = load_all(SHEET)
+TABS = load_all(SHEET_URL)
 
 ###########################
 # balancedb_app.py - Part 2
@@ -778,6 +772,7 @@ with tab3:
             ax.hist(ledger_df["realized_pnl"].dropna(), bins=30, color="blue", alpha=0.6)
             ax.set_title("Realized PnL Distribution")
             st.pyplot(fig)
+
 
 
 
