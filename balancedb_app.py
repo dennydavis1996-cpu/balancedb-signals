@@ -713,21 +713,33 @@ tab1, tab2, tab3 = st.tabs(["⚡ Run Signals", "📂 My Portfolio", "📑 Report
 with tab1:
     st.subheader("Run Balanced_B signal scan")
 
-    # Load config & market
+    # 🔄 Always reload live balances and positions directly from Google Sheet
+    balances_df = load_tab(SHEET_URL, "balances")
+    positions_df = load_tab(SHEET_URL, "positions")
+    ledger_df    = load_tab(SHEET_URL, "ledger")
+
     params = load_params(SHEET_URL)
     market = load_market_data()
-    balances_df, positions_df, ledger_df = TABS["balances"], TABS["positions"], TABS["ledger"]
 
     # --- Run scan button ---
     if st.button("🔍 Run scan now"):
         sigs = compute_signals(market, positions_df, balances_df, params)
-        st.session_state["signals"] = sigs   # ✅ persist scan results for later reruns
+        st.session_state["signals"] = sigs   # ✅ persist scan results
         st.success("Signal scan completed!")
 
     # --- Show signals if available ---
     if "signals" in st.session_state:
         sigs = st.session_state["signals"]
-        st.info(f"Market Regime: **{sigs['regime']}** | Lot cash: ₹{sigs['lot_cash']:.0f}")
+
+        # 🟢 Enhanced info: show cash, regime, divisor, lot_cash
+        regime = sigs['regime']
+        div = params["divisor"] if regime=="Bull" else params["divisor_bear"]
+        st.info(
+            f"Market Regime: **{regime}** | "
+            f"Cash Available: ₹{sigs['cash']:.0f} | "
+            f"Divisor used: {div} | "
+            f"Lot cash per stock: ₹{sigs['lot_cash']:.0f}"
+        )
 
         # --------------- SELL signals ----------------
         st.markdown("### 🚪 SELL signals")
@@ -736,7 +748,9 @@ with tab1:
             st.write("No SELL signals today.")
         else:
             for i, row in sigs["sells"].iterrows():
-                sym, shares, sugg_price, reason, gain = row["symbol"], int(row["shares"]), float(row["price"]), row["reason"], row["gain_pct"]
+                sym, shares, sugg_price, reason, gain = (
+                    row["symbol"], int(row["shares"]), float(row["price"]), row["reason"], row["gain_pct"]
+                )
                 tick = st.checkbox(f"SELL {sym} (Suggested: ₹{sugg_price:.2f}, {reason})", key=f"sell_{i}")
                 if tick:
                     exec_price = st.number_input(
@@ -800,7 +814,7 @@ with tab1:
                 new_bal, new_pos, new_ledger = apply_trade_rows(SHEET, all_trades, balances_df, positions_df, ledger_df)
                 st.success(f"Recorded {len(all_trades)} trades.")
                 st.cache_data.clear()
-                # clear signals so you don’t accidentally reuse them
+                # Clear signals so you don’t accidentally reuse stale data
                 del st.session_state["signals"]
             else:
                 st.warning("No trades selected.")
@@ -820,7 +834,6 @@ with tab1:
             new_bal, new_pos, new_ledger = apply_trade_rows(SHEET, [trade], balances_df, positions_df, ledger_df)
             st.success(f"Funds {action} of ₹{amount} recorded.")
             st.cache_data.clear()
-
 
 # ============ TAB 2: My Portfolio ==================
 with tab2:
@@ -940,6 +953,7 @@ with tab3:
             ax.hist(ledger_df["realized_pnl"].dropna(), bins=30, color="blue", alpha=0.6)
             ax.set_title("Realized PnL Distribution")
             st.pyplot(fig)
+
 
 
 
