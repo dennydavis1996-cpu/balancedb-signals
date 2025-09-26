@@ -436,22 +436,36 @@ def position_snapshot(positions_df, prices_row):
     Join current market prices with positions to compute market value & unrealized PnL.
     prices_row: Series with ticker->price at latest date
     """
-    if positions_df.empty or prices_row is None: return pd.DataFrame()
+    if positions_df.empty or prices_row is None:
+        return pd.DataFrame()
+
+    # Ensure numeric types
+    positions_df = positions_df.copy()
+    positions_df["shares"] = pd.to_numeric(positions_df["shares"], errors="coerce").fillna(0).astype(int)
+    positions_df["avg_cost"] = pd.to_numeric(positions_df["avg_cost"], errors="coerce").fillna(0.0)
+
     holdings = []
     for _, pos in positions_df.iterrows():
         sym = pos["symbol"]
         last_price = prices_row.get(sym, np.nan)
-        if pd.notna(last_price) and pos["shares"]>0:
-            mv = pos["shares"]*last_price
+
+        if pd.notna(last_price) and pos["shares"] > 0:
+            mv = pos["shares"] * last_price
             unr = (last_price - pos["avg_cost"]) * pos["shares"]
-            unr_pct = (last_price/pos["avg_cost"] - 1)*100 if pos["avg_cost"]>0 else np.nan
-            holdings.append(dict(symbol=sym, shares=int(pos["shares"]),
-                                 avg_cost=round(pos["avg_cost"],2),
-                                 last_price=round(last_price,2),
-                                 market_value=round(mv,2),
-                                 unrealized_pnl=round(unr,2),
-                                 unrealized_pct=round(unr_pct,2),
-                                 last_buy=pos["last_buy"], open_date=pos["open_date"]))
+            unr_pct = (last_price / pos["avg_cost"] - 1) * 100 if pos["avg_cost"] > 0 else np.nan
+
+            holdings.append(dict(
+                symbol=sym,
+                shares=int(pos["shares"]),
+                avg_cost=round(pos["avg_cost"], 2),
+                last_price=round(last_price, 2),
+                market_value=round(mv, 2),
+                unrealized_pnl=round(unr, 2),
+                unrealized_pct=round(unr_pct, 2),
+                last_buy=pos["last_buy"],
+                open_date=pos["open_date"],
+            ))
+
     return pd.DataFrame(holdings).sort_values("market_value", ascending=False)
 
 # --------------------------------------------------
@@ -853,6 +867,7 @@ with tab3:
             ax.hist(ledger_df["realized_pnl"].dropna(), bins=30, color="blue", alpha=0.6)
             ax.set_title("Realized PnL Distribution")
             st.pyplot(fig)
+
 
 
 
