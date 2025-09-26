@@ -554,12 +554,10 @@ def compute_xirr(cashflows):
 
 def compute_signals(market, positions_df, balances_df, params):
     """
-    Compute signals using Balanced_B rules, fixed to:
-    - Use available cash (already includes realized PnL) for lot sizing
-    - Respect bull vs bear divisors
-    - Avoid double-counting of realized PnL
-    - Sanitize numeric conversions for safety
-    Returns dict with 'sells', 'new_buys', 'averaging' DataFrames.
+    Compute Balanced_B signals with corrected lot sizing:
+    - Lot size = (cash available + realized PnL) / divisor
+    - Ensures Bull/Bear divisor logic
+    - Returns useful diagnostic fields
     """
 
     bench = market["bench"]
@@ -570,12 +568,11 @@ def compute_signals(market, positions_df, balances_df, params):
     today_prices = prices.loc[today]
     today_turnover = med_turnover.loc[today]
 
-    # --- Current portfolio state ---
-    fee = params["fee"]
+    # --- Current balances ---
     cash = float(balances_df.iloc[0]["cash"]) if not balances_df.empty else params["base_capital"]
-    realized = float(balances_df.iloc[0].get("realized", 0)) if not balances_df.empty else 0
+    realized = float(balances_df.iloc[0].get("realized", 0)) if not balances_df.empty else 0.0
 
-    # Positions clean-up
+    # Positions
     if not positions_df.empty:
         positions_df = positions_df.copy()
         positions_df["shares"] = pd.to_numeric(positions_df["shares"], errors="coerce").fillna(0).astype(int)
@@ -583,7 +580,7 @@ def compute_signals(market, positions_df, balances_df, params):
         if "last_buy" in positions_df.columns:
             positions_df["last_buy"] = pd.to_numeric(positions_df["last_buy"], errors="coerce").fillna(0.0)
 
-    # Invested value (mark-to-market of current holdings)
+    # Invested (mark-to-market of current holdings, just for equity calc)
     if not positions_df.empty:
         merged = positions_df.merge(today_prices.to_frame("price"),
                                     left_on="symbol", right_index=True, how="left")
@@ -591,7 +588,7 @@ def compute_signals(market, positions_df, balances_df, params):
     else:
         invested_val = 0.0
 
-    portfolio_val = cash + invested_val   # ✅ equity = cash + invested
+    portfolio_val = cash + invested_val
 
     # --- Regime detection ---
     bench_ma = bench.rolling(params["regime_filter_ma"],
@@ -599,14 +596,14 @@ def compute_signals(market, positions_df, balances_df, params):
     regime_ok = bool(bench.iloc[-1] >= bench_ma.iloc[-1] * (1 + params["regime_buffer"]))
     div_today = params["divisor"] if regime_ok else params["divisor_bear"]
 
-    # ✅ Lot sizing based on current cash in hand (realized already included)
-    lot_cash = cash / div_today
+    # --- ✅ Lot sizing: cash available + realized profit ---
+    size_capital = cash + realized
+    lot_cash = size_capital / div_today
 
-    # --- Compute moving avg and std for z-score ---
+    # --- Moving avg and std for z-score ---
     ma = prices.rolling(params["ma"], min_periods=params["ma"]).mean()
     std = prices.rolling(params["ma"], min_periods=params["ma"]).std()
-    ma_today = ma.loc[today]
-    std_today = std.loc[today]
+    ma_today = ma.loc[today]; std_today = std.loc[today]
 
     # ---------------- SELL signals ----------------
     sell_signals = []
@@ -619,12 +616,11 @@ def compute_signals(market, positions_df, balances_df, params):
             continue
         ret = px / buy_price - 1
 
-        # Profit take
+        # Take profit
         if ret >= params["take_profit"]:
             sell_signals.append(dict(symbol=sym, reason="TP",
                                      shares=shares, price=px,
                                      gain_pct=round(ret * 100, 2)))
-
         # Time stop
         age = (today - pd.to_datetime(pos["open_date"])).days
         if age >= params["time_stop_days"]:
@@ -641,10 +637,9 @@ def compute_signals(market, positions_df, balances_df, params):
     # ---------------- BUY eligibility ----------------
     elig = [c for c in prices.columns
             if pd.notna(ma_today.get(c)) and pd.notna(today_prices.get(c))
-            and today_prices[c] < ma_today[c]  # below MA
-            and today_turnover.get(c, 0) >= params["min_turnover_cr"]]  # liquidity
+            and today_prices[c] < ma_today[c]
+            and today_turnover.get(c, 0) >= params["min_turnover_cr"]]
 
-    # Ranking candidates
     if params.get("use_zscore", True):
         zmap = {c: (today_prices[c] - ma_today[c]) / std_today[c]
                 for c in elig if pd.notna(std_today.get(c)) and std_today[c] > 0}
@@ -660,45 +655,42 @@ def compute_signals(market, positions_df, balances_df, params):
             continue
         px = today_prices.get(sym, np.nan)
         if pd.notna(px):
-            shares = int(lot_cash // (px * (1 + fee)))
+            shares = int(lot_cash // (px * (1 + params["fee"])))
             if shares > 0:
                 new_buys.append(dict(symbol=sym, price=px, shares=shares, reason="NEW"))
+
     if len(new_buys) > params["max_new_buys"]:
         new_buys = new_buys[:params["max_new_buys"]]
+
     new_buys_df = (pd.DataFrame(new_buys)
                    if new_buys else
                    pd.DataFrame(columns=["symbol", "price", "shares", "reason"]))
 
     # ---------------- AVERAGING signals ----------------
     avgs = []
-    if regime_ok:
-        # Bulls: averaging if price ≤ last_buy*(1 - avg_dd)
+    if regime_ok:  # Bull regime
         for _, pos in positions_df.iterrows():
-            sym = pos["symbol"]
-            last_buy = pos["last_buy"]
+            sym = pos["symbol"]; last_buy = pos["last_buy"]
             px = today_prices.get(sym, np.nan)
             if pd.notna(px) and px <= last_buy * (1 - params["avg_dd"]):
                 if today_turnover.get(sym, 0) >= params["min_turnover_cr"]:
-                    shares = int(lot_cash // (px * (1 + fee)))
+                    shares = int(lot_cash // (px * (1 + params["fee"])))
                     if shares > 0:
                         avgs.append(dict(symbol=sym, price=px, shares=shares, reason="AVERAGE"))
-    else:
-        # Bears: stricter averaging (requires Z-score also below threshold)
+    else:  # Bear regime
         for _, pos in positions_df.iterrows():
-            sym = pos["symbol"]
-            last_buy = pos["last_buy"]
+            sym = pos["symbol"]; last_buy = pos["last_buy"]
             px = today_prices.get(sym, np.nan)
-            if pd.isna(px):
-                continue
+            if pd.isna(px): continue
             m, s = ma_today.get(sym), std_today.get(sym)
-            if pd.isna(m) or pd.isna(s) or s <= 0:
-                continue
+            if pd.isna(m) or pd.isna(s) or s <= 0: continue
             z = (px - m) / s
             if z <= params["avg_in_bear_z_thresh"] and px <= last_buy * (1 - params["avg_dd"]):
                 if today_turnover.get(sym, 0) >= params["min_turnover_cr"]:
-                    shares = int(lot_cash // (px * (1 + fee)))
+                    shares = int(lot_cash // (px * (1 + params["fee"])))
                     if shares > 0:
                         avgs.append(dict(symbol=sym, price=px, shares=shares, reason="AVERAGE"))
+
     avgs_df = (pd.DataFrame(avgs)
                if avgs else
                pd.DataFrame(columns=["symbol", "price", "shares", "reason"]))
@@ -709,9 +701,10 @@ def compute_signals(market, positions_df, balances_df, params):
         averaging=avgs_df,
         regime="Bull" if regime_ok else "Bear",
         lot_cash=lot_cash,
-        portfolio_val=portfolio_val,
+        size_capital=size_capital,   # ✅ show cash+realized used for lot sizing
         cash=cash,
-        realized=realized
+        realized=realized,
+        portfolio_val=portfolio_val
     )
 
 ###########################
@@ -759,9 +752,11 @@ with tab1:
         regime = sigs['regime']
         div = params["divisor"] if regime=="Bull" else params["divisor_bear"]
         st.info(
-            f"Market Regime: **{regime}** | "
-            f"Cash Available: ₹{sigs['cash']:.0f} | "
-            f"Divisor used: {div} | "
+            f"Market Regime: **{sigs['regime']}** | "
+            f"Cash: ₹{sigs['cash']:.0f} | "
+            f"Realized PnL: ₹{sigs['realized']:.0f} | "
+            f"Size Capital (cash+realized): ₹{sigs['size_capital']:.0f} | "
+            f"Divisor used: {params['divisor'] if sigs['regime']=='Bull' else params['divisor_bear']} | "
             f"Lot cash per stock: ₹{sigs['lot_cash']:.0f}"
         )
 
@@ -977,6 +972,7 @@ with tab3:
             ax.hist(ledger_df["realized_pnl"].dropna(), bins=30, color="blue", alpha=0.6)
             ax.set_title("Realized PnL Distribution")
             st.pyplot(fig)
+
 
 
 
