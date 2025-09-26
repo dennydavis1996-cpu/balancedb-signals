@@ -1012,26 +1012,27 @@ with tab2:
 with tab3:
     st.subheader("Reports & Analytics")
 
-    df_daily = load_tab(SHEET_URL,"daily_equity")
-    ledger_df = load_tab(SHEET_URL,"ledger")
+    df_daily = load_tab(SHEET_URL, "daily_equity")
+    ledger_df = load_tab(SHEET_URL, "ledger")
     bench = load_market_data()["bench"]
 
     if df_daily.empty or ledger_df.empty:
-        st.warning("No data yet. Record trades first.")
+        st.warning("⚠️ Not enough data yet. Please record trades first.")
     else:
-        df_daily["date"] = pd.to_datetime(df_daily["date"])
+        # Ensure proper types
+        df_daily["date"] = pd.to_datetime(df_daily["date"], errors="coerce")
+        df_daily = df_daily.dropna(subset=["date"]).sort_values("date")
         df_daily = df_daily.set_index("date")
-        eq = pd.to_numeric(df_daily["equity"])
-        cash_series = pd.to_numeric(df_daily["cash"])
-        invested_series = pd.to_numeric(df_daily["invested"])
-        exp = pd.to_numeric(df_daily["exposure"])
+
+        eq = pd.to_numeric(df_daily["equity"], errors="coerce").dropna()
+        cash_series = pd.to_numeric(df_daily["cash"], errors="coerce").fillna(0)
+        invested_series = pd.to_numeric(df_daily["invested"], errors="coerce").fillna(0)
+        exp = pd.to_numeric(df_daily["exposure"], errors="coerce").fillna(0)
         dd = compute_drawdown(eq)
 
-        # ---------------- Equity vs Benchmark ----------------
+        # ---------------- 1. Equity vs Benchmark ----------------
         st.markdown("### 📈 Equity Curve vs Benchmark (NIFTY 50)")
-
-        bench_aligned = bench.reindex(eq.index).ffill()   # ffill fills gaps so we don't drop everything
-        bench_aligned = bench_aligned.dropna()
+        bench_aligned = bench.reindex(eq.index).ffill().dropna()
 
         if not eq.empty and not bench_aligned.empty:
             strat_norm = eq / eq.iloc[0]
@@ -1039,99 +1040,110 @@ with tab3:
             df_cmp = pd.DataFrame({"Strategy": strat_norm, "NIFTY50": nifty_norm})
             st.line_chart(df_cmp)
         else:
-            st.warning("⚠️ Not enough overlapping data to compare equity vs NIFTY 50.")
+            st.warning("⚠️ Not enough overlapping data to compare Equity vs Benchmark.")
 
         # ---------------- 2. Drawdown curve ----------------
-        st.markdown("### 🌊 Drawdown Curve (Underwater)")
-        fig, ax = plt.subplots(figsize=(9,3))
-        ax.fill_between(dd.index, dd.values, 0, color="red", alpha=0.3)
-        ax.set_title("Strategy Drawdown (%)")
-        st.pyplot(fig)
+        if not dd.empty:
+            st.markdown("### 🌊 Drawdown Curve (Underwater)")
+            fig, ax = plt.subplots(figsize=(9,3))
+            ax.fill_between(dd.index, dd.values*100, 0, color="red", alpha=0.3)
+            ax.set_ylabel("%")
+            st.pyplot(fig)
 
         # ---------------- 3. Rolling 1Y CAGR ----------------
         st.markdown("### 🔄 Rolling 1-Year CAGR")
         if len(eq) > 252:
-            roll_cagr = (eq/eq.shift(252))**(1)-1
+            roll_cagr = (eq/eq.shift(252))**(1/1)-1
+            roll_cagr = roll_cagr.dropna()
             fig, ax = plt.subplots(figsize=(9,3))
-            ax.plot(roll_cagr.index, roll_cagr.values*100)
+            ax.plot(roll_cagr.index, roll_cagr.values*100, color="blue")
             ax.axhline(0, color="grey", linestyle="--", lw=1)
             ax.set_ylabel("% CAGR")
             st.pyplot(fig)
+        else:
+            st.info("Not enough data to compute 1Y rolling CAGR (need >252 days).")
 
         # ---------------- 4. Exposure over time ----------------
         st.markdown("### 📊 Exposure Over Time")
-        fig, ax = plt.subplots(figsize=(9,3))
-        ax.plot(exp.index, exp.values*100)
-        ax.set_ylabel("% Invested")
-        st.pyplot(fig)
+        if not exp.empty:
+            fig, ax = plt.subplots(figsize=(9,3))
+            ax.plot(exp.index, exp.values*100, color="green")
+            ax.set_ylabel("% Invested")
+            st.pyplot(fig)
 
         # ---------------- 5. Realized PnL Histogram ----------------
         st.markdown("### 💵 Distribution of Realized Trade PnL")
-        if "realized_pnl" in ledger_df.columns and not ledger_df["realized_pnl"].dropna().empty:
-            fig, ax = plt.subplots(figsize=(7,4))
-            ax.hist(ledger_df["realized_pnl"].dropna(), bins=40, color="steelblue", alpha=0.7)
-            ax.set_title("Distribution of Realized Trade PnL")
-            ax.set_xlabel("PnL (Rs)")
-            st.pyplot(fig)
+        if "realized_pnl" in ledger_df.columns:
+            realized_pnls = pd.to_numeric(ledger_df["realized_pnl"], errors="coerce").dropna()
+            if not realized_pnls.empty:
+                fig, ax = plt.subplots(figsize=(7,4))
+                ax.hist(realized_pnls, bins=40, color="steelblue", alpha=0.7)
+                ax.set_title("Distribution of Realized Trade PnL")
+                ax.set_xlabel("PnL (₹)")
+                st.pyplot(fig)
+            else:
+                st.warning("No realized trades yet to plot PnL distribution.")
 
         # ---------------- 6. Monthly Return Heatmap ----------------
         st.markdown("### 📆 Monthly Returns Heatmap")
         rets = eq.pct_change().dropna()
-        monthly = rets.resample('M').apply(lambda x: (1+x).prod()-1)
-        monthly = monthly.to_frame("Return")
-        monthly["Year"] = monthly.index.year
-        monthly["Month"] = monthly.index.strftime("%b")
-        pivot = monthly.pivot(index="Year", columns="Month", values="Return").fillna(0)*100
-        import seaborn as sns
-        fig, ax = plt.subplots(figsize=(10,4))
-        sns.heatmap(pivot, annot=True, fmt=".1f", cmap="RdYlGn", center=0, ax=ax, cbar_kws={'label': '%'})
-        st.pyplot(fig)
+        if not rets.empty:
+            monthly = rets.resample('M').apply(lambda x: (1+x).prod()-1)
+            monthly = monthly.to_frame("Return")
+            monthly["Year"] = monthly.index.year
+            monthly["Month"] = monthly.index.strftime("%b")
+            pivot = monthly.pivot(index="Year", columns="Month", values="Return").fillna(0)*100
+
+            try:
+                import seaborn as sns
+                fig, ax = plt.subplots(figsize=(10,4))
+                sns.heatmap(pivot, annot=True, fmt=".1f", cmap="RdYlGn", center=0,
+                            ax=ax, cbar_kws={'label': '%'})
+                st.pyplot(fig)
+            except ImportError:
+                st.warning("Seaborn not installed, showing table instead:")
+                st.dataframe(pivot.style.format("{:.1f}"))
 
         # ---------------- 7. Trade Duration Analysis ----------------
         st.markdown("### ⏱ Trade Holding Duration")
         if "holding_days" in ledger_df.columns:
             holding_days = pd.to_numeric(ledger_df["holding_days"], errors="coerce").dropna()
-            fig, ax = plt.subplots(figsize=(7,4))
-            ax.hist(holding_days, bins=30, color="purple", alpha=0.6)
-            ax.set_title("Distribution of Holding Days")
-            st.pyplot(fig)
+            if not holding_days.empty:
+                fig, ax = plt.subplots(figsize=(7,4))
+                ax.hist(holding_days, bins=30, color="purple", alpha=0.6)
+                ax.set_title("Distribution of Holding Days")
+                ax.set_xlabel("Days")
+                st.pyplot(fig)
 
         # ---------------- 8. Win Rate & Payoff Ratio ----------------
         st.markdown("### 🎯 Win Rate & Payoff Stats")
-        trades = ledger_df[ledger_df["side"]=="SELL"].copy()
-        if not trades.empty:
-            wins = trades[trades["realized_pnl"]>0]
-            losses = trades[trades["realized_pnl"]<=0]
-            win_rate = len(wins)/len(trades)*100 if len(trades)>0 else 0
+        sells = ledger_df[ledger_df["side"]=="SELL"].copy()
+        if not sells.empty:
+            wins = sells[sells["realized_pnl"]>0]
+            losses = sells[sells["realized_pnl"]<=0]
+            win_rate = len(wins)/len(sells)*100 if len(sells)>0 else 0
             avg_win = wins["realized_pnl"].mean() if not wins.empty else 0
             avg_loss = losses["realized_pnl"].mean() if not losses.empty else 0
-            st.metric("Win Rate", f"{win_rate:.1f}%")
-            st.metric("Avg Win", f"₹{avg_win:,.0f}")
-            st.metric("Avg Loss", f"₹{avg_loss:,.0f}")
+            col1, col2, col3 = st.columns(3)
+            col1.metric("Trades", f"{len(sells)}")
+            col2.metric("Win Rate", f"{win_rate:.1f}%")
+            col3.metric("Payoff Ratio", f"{abs(avg_win/avg_loss):.2f}" if avg_loss!=0 else "NA")
 
         # ---------------- 9. Top 10 Contributors ----------------
         st.markdown("### 🏆 Top 10 Stock Contributors")
-        if "symbol" in ledger_df.columns:
+        if "symbol" in ledger_df.columns and "realized_pnl" in ledger_df.columns:
             contrib = ledger_df.groupby("symbol")["realized_pnl"].sum().sort_values(ascending=False)
-            top10 = contrib.head(10).to_frame("Total PnL")
-            st.bar_chart(top10)
+            if not contrib.empty:
+                top10 = contrib.head(10).to_frame("Total PnL")
+                st.bar_chart(top10)
 
         # ---------------- 10. Rolling Volatility & Sharpe ----------------
         st.markdown("### 📏 Rolling Volatility & Sharpe Ratio (120d)")
         if len(eq)>120:
             rets = eq.pct_change().dropna()
             roll_vol = rets.rolling(120).std() * (252**0.5)
-            roll_sharpe = rets.rolling(120).mean()/(rets.rolling(120).std()+1e-9) * (252**0.5)
+            roll_sharpe = (rets.rolling(120).mean()/(rets.rolling(120).std()+1e-9)) * (252**0.5)
             fig, ax = plt.subplots(2,1,figsize=(9,6), sharex=True)
             ax[0].plot(roll_vol.index, roll_vol.values, color="orange"); ax[0].set_title("Rolling Volatility")
             ax[1].plot(roll_sharpe.index, roll_sharpe.values, color="green"); ax[1].set_title("Rolling Sharpe")
             st.pyplot(fig)
-
-
-
-
-
-
-
-
-
