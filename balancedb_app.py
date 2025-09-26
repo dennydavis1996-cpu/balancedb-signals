@@ -387,10 +387,6 @@ def apply_trade_rows(sh, trades, balances_df, positions_df, ledger_df):
         realized = 0.0
         fees_paid = 0.0
 
-    st.write("DEBUG Starting Balances -> Cash:", cash,
-             "Base_capital:", base_cap,
-             "Realized:", realized,
-             "Fees:", fees_paid)
 
     for tr in trades:
         sym, side = tr["symbol"], tr["side"]
@@ -441,12 +437,6 @@ def apply_trade_rows(sh, trades, balances_df, positions_df, ledger_df):
                 realized += pnl
                 fees_paid += fee_amt
 
-                st.write("DEBUG SELL -> Sym:", sym,
-                         "Gross:", proceeds_gross,
-                         "Net:", proceeds_net,
-                         "PnL:", pnl,
-                         "Cash after sell:", cash,
-                         "Realized total:", realized)
 
                 if shares == held_shares:
                     positions_df = positions_df[positions_df["symbol"] != sym]
@@ -480,7 +470,6 @@ def apply_trade_rows(sh, trades, balances_df, positions_df, ledger_df):
         "last_update": today_str(),
     }])
 
-    st.write("DEBUG Writing Balances ->", balances_new)
 
     save_df(sh, "balances", balances_new)
     save_df(sh, "positions", positions_df)
@@ -796,7 +785,7 @@ with tab1:
                 sym, shares, sugg_price, reason, gain = (
                     row["symbol"], int(row["shares"]), float(row["price"]), row["reason"], row["gain_pct"]
                 )
-                tick = st.checkbox(f"SELL {sym} (Suggested: ₹{sugg_price:.2f}, {reason})", key=f"sell_{i}")
+                tick = st.checkbox(f"SELL {sym} ({shares} shares, {reason})", key=f"sell_{i}")
                 if tick:
                     exec_price = st.number_input(
                         f"Enter execution SELL price for {sym}",
@@ -818,7 +807,7 @@ with tab1:
         else:
             for i, row in sigs["new_buys"].iterrows():
                 sym, shares, sugg_price = row["symbol"], int(row["shares"]), float(row["price"])
-                tick = st.checkbox(f"BUY {sym} (Suggested: ₹{sugg_price:.2f}, NEW)", key=f"buy_{i}")
+                tick = st.checkbox(f"BUY {sym} (Qty: {shares} shares, NEW)", key=f"buy_{i}")
                 if tick:
                     exec_price = st.number_input(
                         f"Enter execution BUY price for {sym}",
@@ -840,7 +829,7 @@ with tab1:
         else:
             for i, row in sigs["averaging"].iterrows():
                 sym, shares, sugg_price = row["symbol"], int(row["shares"]), float(row["price"])
-                tick = st.checkbox(f"AVERAGE {sym} (Suggested: ₹{sugg_price:.2f})", key=f"avg_{i}")
+                tick = st.checkbox(f"AVERAGE {sym} (Qty: {shares} shares)", key=f"avg_{i}")
                 if tick:
                     exec_price = st.number_input(
                         f"Enter execution AVG price for {sym}",
@@ -1022,6 +1011,7 @@ with tab3:
             ax.hist(ledger_df["realized_pnl"].dropna(), bins=30, color="blue", alpha=0.6)
             ax.set_title("Realized PnL Distribution")
             st.pyplot(fig)
+
 
 
 
