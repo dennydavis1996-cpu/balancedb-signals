@@ -753,13 +753,13 @@ with tab1:
         div = params["divisor"] if regime=="Bull" else params["divisor_bear"]
         st.info(
             f"Market Regime: **{sigs['regime']}** | "
-            f"Cash: ₹{sigs['cash']:.0f} | "
-            f"Realized PnL: ₹{sigs['realized']:.0f} | "
-            f"Size Capital (cash+realized): ₹{sigs['size_capital']:.0f} | "
+            f"Cash: ₹{sigs.get('cash',0):,.0f} | "
+            f"Realized PnL: ₹{sigs.get('realized',0):,.0f} | "
+            f"Size Capital (cash+realized): ₹{sigs.get('size_capital', sigs.get('cash',0)+sigs.get('realized',0)):,.0f} | "
             f"Divisor used: {params['divisor'] if sigs['regime']=='Bull' else params['divisor_bear']} | "
-            f"Lot cash per stock: ₹{sigs['lot_cash']:.0f}"
+            f"Lot cash per stock: ₹{sigs.get('lot_cash',0):,.0f}"
         )
-
+        
         # --------------- SELL signals ----------------
         st.markdown("### 🚪 SELL signals")
         selected_sells = []
@@ -882,20 +882,37 @@ with tab2:
 
         # Display balances summary nicely
         st.markdown("### 💵 Balances & PnL Summary")
-        col1, col2, col3, col4, col5 = st.columns(5)
-        col1.metric("Cash (free)", f"₹{cash:,.0f}")
-        col2.metric("Invested", f"₹{invested:,.0f}")
 
-        # Aggregate unrealized pnl
+        # Extract balances safely
+        cash = float(balances_df.iloc[0]["cash"])
+        base_cap = float(balances_df.iloc[0]["base_capital"])
+        realized = float(balances_df.iloc[0].get("realized", 0))
+        fees_paid = float(balances_df.iloc[0].get("fees_paid", 0))
+
+        # Include size_capital = cash + realized
+        size_capital = cash + realized
+
+        # Current holdings market value
+        invested = holdings["market_value"].sum() if not holdings.empty else 0.0
         unrealized = holdings["unrealized_pnl"].sum() if not holdings.empty else 0.0
+        equity_val = cash + invested   # total account equity
 
-        col3.metric("Equity (Total)", f"₹{equity_val:,.0f}")
-        col4.metric("Realized PnL (cumulative)", f"₹{realized:,.0f}")
-        col5.metric("Unrealized PnL (current)", f"₹{unrealized:,.0f}")
+        # Show metrics in two rows for clarity
+        col1, col2, col3, col4, col5 = st.columns(5)
+        col1.metric("Base Capital", f"₹{base_cap:,.0f}")
+        col2.metric("Cash (current)", f"₹{cash:,.0f}")
+        col3.metric("Realized PnL (cumulative)", f"₹{realized:,.0f}")
+        col4.metric("Size Capital (Cash+Realized)", f"₹{size_capital:,.0f}")
+        col5.metric("Fees Paid", f"₹{fees_paid:,.0f}")
 
-        st.caption("📌 Equity = Cash + Invested. Realized PnL is already included in Cash. "
-           "Unrealized PnL shows gains/losses from open positions.")
+        col6, col7, col8 = st.columns(3)
+        col6.metric("Invested", f"₹{invested:,.0f}")
+        col7.metric("Unrealized PnL", f"₹{unrealized:,.0f}")
+        col8.metric("Equity (Cash + Invested)", f"₹{equity_val:,.0f}")
 
+        st.caption("📌 Lot sizing in signals will be based on **Size Capital (Cash + Realized)** ÷ Divisor.\n"
+           "Equity = Cash + Invested. Realized PnL is booked profits, Unrealized PnL is floating.")
+        
         # Positions (with unrealized PnL)
         st.markdown("### 📂 Current Holdings")
         if holdings.empty:
@@ -972,6 +989,7 @@ with tab3:
             ax.hist(ledger_df["realized_pnl"].dropna(), bins=30, color="blue", alpha=0.6)
             ax.set_title("Realized PnL Distribution")
             st.pyplot(fig)
+
 
 
 
