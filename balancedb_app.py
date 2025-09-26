@@ -807,7 +807,7 @@ with tab2:
         st.warning("⚠️ No balances yet. Record a trade or fund injection first.")
     else:
         # Extract balances
-        cash = float(balances_df.iloc[0]["cash"])
+        cash = float(balances_df.iloc[0]["cash"])+float(balances_df.iloc[0].get("realized", 0))
         base_cap = float(balances_df.iloc[0]["base_capital"])
         realized = float(balances_df.iloc[0].get("realized", 0))
         fees_paid = float(balances_df.iloc[0].get("fees_paid", 0))
@@ -913,6 +913,7 @@ with tab3:
             ax.hist(ledger_df["realized_pnl"].dropna(), bins=30, color="blue", alpha=0.6)
             ax.set_title("Realized PnL Distribution")
             st.pyplot(fig)
+
 
 
 
