@@ -450,9 +450,11 @@ def apply_trade_rows(sh, trades, balances_df, positions_df, ledger_df):
 
         elif side == "FUND_IN":
             cash += tr["amount"]
+            base_cap += tr["amount"]       # ✅ increase base capital too
 
         elif side == "FUND_OUT":
             cash -= tr["amount"]
+            base_cap -= tr["amount"]       # ✅ reduce base capital too
 
         # Append trade to ledger
         ledger_row = dict(date=date, side=side, symbol=sym, shares=shares, price=price,
@@ -1011,6 +1013,7 @@ with tab3:
             ax.hist(ledger_df["realized_pnl"].dropna(), bins=30, color="blue", alpha=0.6)
             ax.set_title("Realized PnL Distribution")
             st.pyplot(fig)
+
 
 
 
