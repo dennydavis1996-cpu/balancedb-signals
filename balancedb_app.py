@@ -784,44 +784,41 @@ with tab1:
 
     params = load_params(SHEET_URL)
 
-    # --- Run scan button ---
+    # --- Run scan now ---
     if st.button("🔍 Run scan now"):
         # Heavy calls only once
         balances_df = load_tab(SHEET_URL, "balances")
         positions_df = load_tab(SHEET_URL, "positions")
         ledger_df    = load_tab(SHEET_URL, "ledger")
-        market = load_market_data()
-        sigs = compute_signals(market, positions_df, balances_df, params)
+        market       = load_market_data()
+        sigs         = compute_signals(market, positions_df, balances_df, params)
 
         # Save to session_state
         st.session_state["signals"]   = sigs
         st.session_state["balances"]  = balances_df
         st.session_state["positions"] = positions_df
         st.session_state["ledger"]    = ledger_df
-
         st.success("Signal scan completed!")
 
     # --- Show signals if available ---
     if "signals" in st.session_state:
-        sigs        = st.session_state["signals"]
-        balances_df = st.session_state["balances"]
-        positions_df= st.session_state["positions"]
-        ledger_df   = st.session_state["ledger"]
+        sigs = st.session_state["signals"]
+
+        # Guarded access (use fallback load_tab if key missing)
+        balances_df  = st.session_state.get("balances", load_tab(SHEET_URL,"balances"))
+        positions_df = st.session_state.get("positions", load_tab(SHEET_URL,"positions"))
+        ledger_df    = st.session_state.get("ledger",    load_tab(SHEET_URL,"ledger"))
 
         regime = sigs['regime']
         div = params["divisor"] if regime=="Bull" else params["divisor_bear"]
         st.info(
-            f"Market Regime: **{sigs['regime']}** | "
+            f"Market Regime: **{regime}** | "
             f"Cash: ₹{sigs.get('cash',0):,.0f} | "
             f"Realized PnL: ₹{sigs.get('realized',0):,.0f} | "
             f"Size Capital (Cash+Realized): ₹{sigs.get('size_capital',0):,.0f} | "
             f"Divisor used: {div} | "
             f"Lot cash per stock: ₹{sigs.get('lot_cash',0):,.0f}"
         )
-
-        # Use session_state for selections
-        if "selected_trades" not in st.session_state:
-            st.session_state["selected_trades"] = []
 
         selected_trades = []
 
@@ -832,7 +829,8 @@ with tab1:
         else:
             for i, row in sigs["sells"].iterrows():
                 sym, shares, px, reason, gain = (
-                    row["symbol"], int(row["shares"]), float(row["price"]), row["reason"], row["gain_pct"]
+                    row["symbol"], int(row["shares"]),
+                    float(row["price"]), row["reason"], row["gain_pct"]
                 )
                 tick = st.checkbox(f"SELL {sym} ({shares} shares, {reason})", key=f"sell_{i}")
                 if tick:
@@ -849,7 +847,7 @@ with tab1:
         st.markdown("---")
 
         # --------------- NEW BUY signals ---------------
-        st.markdown("### 🆕 New BUY signals (Qty based)")
+        st.markdown("### 🆕 New BUY signals")
         if sigs["new_buys"].empty:
             st.write("No new BUY signals today.")
         else:
@@ -895,11 +893,12 @@ with tab1:
                     SHEET, selected_trades, balances_df, positions_df, ledger_df
                 )
                 st.success(f"Recorded {len(selected_trades)} trades.")
-                # Refresh data after trades
+
+                # Refresh session_state with new data after trades
                 st.session_state["balances"]  = new_bal
                 st.session_state["positions"] = new_pos
                 st.session_state["ledger"]    = new_ledger
-                st.session_state.pop("signals", None)   # clear signals so they are rescanned next time
+                st.session_state.pop("signals", None)  # clear signals for fresh scan
             else:
                 st.warning("No trades selected.")
 
@@ -1147,4 +1146,5 @@ with tab3:
             ax[0].plot(roll_vol.index, roll_vol.values, color="orange"); ax[0].set_title("Rolling Volatility")
             ax[1].plot(roll_sharpe.index, roll_sharpe.values, color="green"); ax[1].set_title("Rolling Sharpe")
             st.pyplot(fig)
+
 
