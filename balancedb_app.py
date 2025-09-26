@@ -110,37 +110,69 @@ def save_df(sh, tab, df):
 @st.cache_data(ttl=60)
 def load_tab(sheet_url, tab):
     """
-    Read a tab into a DataFrame.
-    - For balances: ensure numeric types for cash/realized/fees.
-    - For positions: ensure 'shares' and 'avg_cost' are numeric.
-    - For others: just return DataFrame.
+    Load a specific tab from Google Sheet and sanitize datatypes.
+    - balances: numbers for cash, realized, fees, base_capital
+    - positions: numbers for shares, avg_cost, last_buy; keep open_date as string or convert to datetime
+    - ledger: numbers for shares/price/fee/pnl; dates as string
+    - config: leave as-is (but could coerce floats if needed)
+    - daily_equity: numbers for equity/cash/invested/exposure
     """
     sh = open_sheet(sheet_url)
     ws = sh.worksheet(tab)
     values = ws.get_all_values()
 
+    # No data = empty df with headers
     if not values or len(values) <= 1:
         return pd.DataFrame(columns=values[0] if values else [])
 
-    # Convert everything below header row into DataFrame
+    # Convert rows below header row to DataFrame
     df = pd.DataFrame(values[1:], columns=values[0])
 
-    # --- Numeric cleanups ---
+    # --- Sanitize by tab ---
     if tab == "balances" and not df.empty:
         for col in ["cash", "base_capital", "realized", "fees_paid"]:
-            df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0.0)
-
-    if tab == "positions" and not df.empty:
-        df["shares"] = pd.to_numeric(df["shares"], errors="coerce").fillna(0).astype(int)
-        df["avg_cost"] = pd.to_numeric(df["avg_cost"], errors="coerce").fillna(0.0)
-
-    if tab == "ledger" and not df.empty:
-        # coerce shares, price, fee, realized_pnl columns
-        if "shares" in df.columns:
-            df["shares"] = pd.to_numeric(df["shares"], errors="coerce").fillna(0).astype(int)
-        for col in ["price","fee","realized_pnl","cash_before","cash_after"]:
             if col in df.columns:
                 df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0.0)
+
+    elif tab == "positions" and not df.empty:
+        if "shares" in df.columns:
+            df["shares"] = pd.to_numeric(df["shares"], errors="coerce").fillna(0).astype(int)
+        if "avg_cost" in df.columns:
+            df["avg_cost"] = pd.to_numeric(df["avg_cost"], errors="coerce").fillna(0.0)
+        if "last_buy" in df.columns:
+            df["last_buy"] = pd.to_numeric(df["last_buy"], errors="coerce").fillna(0.0)
+        # Optionally convert open_date to datetime
+        if "open_date" in df.columns:
+            try:
+                df["open_date"] = pd.to_datetime(df["open_date"], errors="coerce").dt.date.astype(str)
+            except Exception:
+                pass
+
+    elif tab == "ledger" and not df.empty:
+        # ensure numeric values where needed
+        if "shares" in df.columns:
+            df["shares"] = pd.to_numeric(df["shares"], errors="coerce").fillna(0).astype(int)
+        for col in ["price","fee","realized_pnl","cash_before","cash_after","holding_days"]:
+            if col in df.columns:
+                df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0.0)
+        # convert ledger date if present
+        if "date" in df.columns:
+            try:
+                df["date"] = pd.to_datetime(df["date"], errors="coerce").dt.date.astype(str)
+            except Exception:
+                pass
+
+    elif tab == "daily_equity" and not df.empty:
+        for col in ["equity","cash","invested","exposure"]:
+            if col in df.columns:
+                df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0.0)
+        if "date" in df.columns:
+            try:
+                df["date"] = pd.to_datetime(df["date"], errors="coerce").dt.date.astype(str)
+            except Exception:
+                pass
+
+    # config tab stays as loaded, you derive floats in load_params()
 
     return df
 
@@ -881,6 +913,7 @@ with tab3:
             ax.hist(ledger_df["realized_pnl"].dropna(), bins=30, color="blue", alpha=0.6)
             ax.set_title("Realized PnL Distribution")
             st.pyplot(fig)
+
 
 
 
