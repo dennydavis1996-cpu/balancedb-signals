@@ -304,9 +304,19 @@ def apply_trade_rows(sh, trades, balances_df, positions_df, ledger_df):
     Apply trades (BUY/SELL/FUND_IN/FUND_OUT) and update balances,
     positions, and ledger in Google Sheets. Then clear cache so reads refresh.
     """
-    cash = float(balances_df.iloc[0]["cash"]) if not balances_df.empty else DEFAULT_PARAMS["base_capital"]
-    realized = float(balances_df.iloc[0].get("realized", 0)) if not balances_df.empty else 0
-    fees_paid = float(balances_df.iloc[0].get("fees_paid", 0)) if not balances_df.empty else 0
+
+    # --- load previous balances ---
+    if not balances_df.empty:
+        cash = float(balances_df.iloc[0]["cash"])
+        base_cap = float(balances_df.iloc[0]["base_capital"])
+        realized = float(balances_df.iloc[0].get("realized", 0))
+        fees_paid = float(balances_df.iloc[0].get("fees_paid", 0))
+    else:
+        # first-time init
+        base_cap = DEFAULT_PARAMS["base_capital"]
+        cash = base_cap
+        realized = 0.0
+        fees_paid = 0.0
 
     for tr in trades:
         sym, side = tr["symbol"], tr["side"]
@@ -327,17 +337,21 @@ def apply_trade_rows(sh, trades, balances_df, positions_df, ledger_df):
                     tot_cost = old_shares * avg_cost + shares * price
                     new_shares = old_shares + shares
                     new_avg = tot_cost / new_shares
-                    positions_df.loc[positions_df["symbol"] == sym, ["shares", "avg_cost", "last_buy", "open_date"]] = [
-                        new_shares, new_avg, price, date
-                    ]
+                    positions_df.loc[positions_df["symbol"] == sym,
+                                     ["shares", "avg_cost", "last_buy", "open_date"]] = [
+                                         new_shares, new_avg, price, date
+                                     ]
                 else:
                     new_row = dict(symbol=sym, shares=shares, avg_cost=price,
                                    last_buy=price, open_date=date)
-                    positions_df = pd.concat([positions_df, pd.DataFrame([new_row])], ignore_index=True)
+                    positions_df = pd.concat([positions_df, pd.DataFrame([new_row])],
+                                             ignore_index=True)
             else:
                 st.warning(f"Not enough cash for BUY {sym} {shares}@{price}")
 
         elif side == "SELL":
+            pnl = 0.0
+            holding_days = 0
             if sym in positions_df["symbol"].values:
                 pos = positions_df.loc[positions_df["symbol"] == sym].iloc[0]
                 held_shares = int(pos["shares"])
@@ -355,10 +369,10 @@ def apply_trade_rows(sh, trades, balances_df, positions_df, ledger_df):
                     positions_df = positions_df[positions_df["symbol"] != sym]
                 else:
                     positions_df.loc[positions_df["symbol"] == sym, "shares"] = held_shares - shares
-                holding_days = (dt.date.fromisoformat(date) - dt.date.fromisoformat(pos["open_date"])).days
+                holding_days = (dt.date.fromisoformat(date) -
+                                dt.date.fromisoformat(pos["open_date"])).days
             else:
                 st.warning(f"No shares to sell for {sym}")
-                pnl, holding_days = 0, 0
 
         elif side == "FUND_IN":
             cash += tr["amount"]
@@ -372,19 +386,20 @@ def apply_trade_rows(sh, trades, balances_df, positions_df, ledger_df):
                           holding_days=locals().get("holding_days", 0))
         ledger_df = pd.concat([ledger_df, pd.DataFrame([ledger_row])], ignore_index=True)
 
-    # Save updated data back to GSheet
+    # --- save updated balances ---
     balances_new = pd.DataFrame([dict(
         cash=round(cash, 2),
-        base_capital=DEFAULT_PARAMS["base_capital"],
+        base_capital=base_cap,                 # ✅ base capital fixed to initial seed
         realized=round(realized, 2),
         fees_paid=round(fees_paid, 2),
         last_update=today_str(),
     )])
+
     save_df(sh, "balances", balances_new)
     save_df(sh, "positions", positions_df)
     save_df(sh, "ledger", ledger_df)
 
-    # 🧹 Clear Streamlit cache so subsequent loads fetch fresh Google Sheet state
+    # Clear cached sheet values so UI refreshes with latest
     st.cache_data.clear()
 
     return balances_new, positions_df, ledger_df
@@ -814,6 +829,7 @@ with tab3:
             ax.hist(ledger_df["realized_pnl"].dropna(), bins=30, color="blue", alpha=0.6)
             ax.set_title("Realized PnL Distribution")
             st.pyplot(fig)
+
 
 
 
