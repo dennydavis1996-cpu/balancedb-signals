@@ -365,7 +365,40 @@ def load_market_data(start=None, end=None):
 # --------------------------------------------------
 def today_str():
     return dt.date.today().strftime("%Y-%m-%d")
+def update_daily_equity(sh, balances_df, positions_df):
+    """
+    Append today's equity snapshot into 'daily_equity' tab.
+    """
+    today = today_str()
 
+    cash = float(balances_df.iloc[0]["cash"])
+    invested = 0.0
+
+    if not positions_df.empty:
+        market = load_market_data()
+        live_prices = get_live_prices(market["tickers"])
+        holdings = position_snapshot(positions_df,
+                                     live_prices=live_prices,
+                                     fallback_prices=market["prices"].iloc[-1])
+        invested = holdings["market_value"].sum() if not holdings.empty else 0.0
+
+    equity = cash + invested
+    exposure = invested / equity if equity > 0 else 0.0
+
+    new_row = pd.DataFrame([{
+        "date": today,
+        "equity": round(equity,2),
+        "cash": round(cash,2),
+        "invested": round(invested,2),
+        "exposure": round(exposure,4),
+        "source": "app"
+    }])
+
+    # Load existing
+    df_old = load_tab(SHEET_URL, "daily_equity")
+    df_new = pd.concat([df_old, new_row], ignore_index=True).drop_duplicates(subset=["date"], keep="last")
+
+    save_df(sh, "daily_equity", df_new)
 # --------------------------------------------------
 # Ledger + balances update (apply trades)
 # --------------------------------------------------
@@ -476,6 +509,8 @@ def apply_trade_rows(sh, trades, balances_df, positions_df, ledger_df):
     save_df(sh, "balances", balances_new)
     save_df(sh, "positions", positions_df)
     save_df(sh, "ledger", ledger_df)
+
+    update_daily_equity(sh, balances_new, positions_df)
 
     st.cache_data.clear()
 
@@ -1086,6 +1121,7 @@ with tab3:
             ax[0].plot(roll_vol.index, roll_vol.values, color="orange"); ax[0].set_title("Rolling Volatility")
             ax[1].plot(roll_sharpe.index, roll_sharpe.values, color="green"); ax[1].set_title("Rolling Sharpe")
             st.pyplot(fig)
+
 
 
 
