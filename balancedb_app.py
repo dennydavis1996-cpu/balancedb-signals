@@ -567,7 +567,7 @@ def compute_signals(market, positions_df, balances_df, params):
     fee = params["fee"]
     cash = float(balances_df.iloc[0]["cash"]) if not balances_df.empty else params["base_capital"]
     realized = float(balances_df.iloc[0].get("realized",0)) if not balances_df.empty else 0
-    portfolio_val = cash + (positions_df.merge(today_prices.to_frame("price"), left_on="symbol", right_index=True)["price"]*positions_df["shares"]).sum() if not positions_df.empty else cash
+    portfolio_val = realized + cash + (positions_df.merge(today_prices.to_frame("price"), left_on="symbol", right_index=True)["price"]*positions_df["shares"]).sum() if not positions_df.empty else cash
 
     # --- Regime detection ---
     bench_ma = bench.rolling(params["regime_filter_ma"], min_periods=params["regime_filter_ma"]).mean()
@@ -913,6 +913,7 @@ with tab3:
             ax.hist(ledger_df["realized_pnl"].dropna(), bins=30, color="blue", alpha=0.6)
             ax.set_title("Realized PnL Distribution")
             st.pyplot(fig)
+
 
 
 
