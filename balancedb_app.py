@@ -71,7 +71,8 @@ def open_sheet(url):
 
 def ensure_tabs(sh):
     """
-    Ensure required tabs exist ONCE at startup (don’t call this every rerun).
+    Ensure required tabs exist with correct schema.
+    For 'balances', also create an initial data row so cash persists.
     """
     required = {
         "balances": ["cash", "base_capital", "realized", "fees_paid", "last_update"],
@@ -84,8 +85,17 @@ def ensure_tabs(sh):
     existing_titles = [ws.title for ws in sh.worksheets()]
     for tab, cols in required.items():
         if tab not in existing_titles:
-            ws = sh.add_worksheet(title=tab, rows="1000", cols=str(len(cols)))
+            ws = sh.add_worksheet(title=tab, rows="5000", cols=str(len(cols)))
             ws.append_row(cols)
+            if tab == "balances":
+                # ✅ Create an initial record row so cash persists properly
+                ws.append_row([
+                    DEFAULT_PARAMS["base_capital"],  # cash
+                    DEFAULT_PARAMS["base_capital"],  # base_capital
+                    0,  # realized
+                    0,  # fees_paid
+                    today_str(),  # last_update
+                ])
             st.info(f"Created missing tab: {tab}")
 
 def save_df(sh, tab, df):
@@ -99,15 +109,26 @@ def save_df(sh, tab, df):
 
 @st.cache_data(ttl=60)
 def load_tab(sheet_url, tab):
+    """
+    Read a tab into a DataFrame.
+    - For 'balances', always include first data row.
+    - For others, just return DataFrame.
+    """
     sh = open_sheet(sheet_url)
-    try:
-        ws = sh.worksheet(tab)
-        data = ws.get_all_records()
-        if not data:
-            return pd.DataFrame(columns=ws.row_values(1))
-        return pd.DataFrame(data)
-    except Exception:
-        return pd.DataFrame()
+    ws = sh.worksheet(tab)
+    values = ws.get_all_values()
+
+    if not values or len(values) <= 1:
+        return pd.DataFrame(columns=values[0] if values else [])
+
+    # Convert values[1:] to DataFrame with headers
+    df = pd.DataFrame(values[1:], columns=values[0])
+
+    # Cast numeric columns for balances
+    if tab == "balances" and not df.empty:
+        for col in ["cash", "base_capital", "realized", "fees_paid"]:
+            df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)
+    return df
 
 @st.cache_data(ttl=60)
 def load_all(sheet_url):
@@ -832,6 +853,7 @@ with tab3:
             ax.hist(ledger_df["realized_pnl"].dropna(), bins=30, color="blue", alpha=0.6)
             ax.set_title("Realized PnL Distribution")
             st.pyplot(fig)
+
 
 
 
