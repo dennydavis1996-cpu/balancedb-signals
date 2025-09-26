@@ -9,3 +9,4 @@ html5lib
 gspread
 gspread-dataframe
 google-auth
+seaborn
