@@ -782,128 +782,129 @@ tab1, tab2, tab3 = st.tabs(["⚡ Run Signals", "📂 My Portfolio", "📑 Report
 with tab1:
     st.subheader("Run Balanced_B signal scan")
 
+    # 🔄 Always reload live balances and positions directly from Google Sheet
+    balances_df = load_tab(SHEET_URL, "balances")
+    positions_df = load_tab(SHEET_URL, "positions")
+    ledger_df    = load_tab(SHEET_URL, "ledger")
+
     params = load_params(SHEET_URL)
+    market = load_market_data()
 
-    # --- Run scan now ---
+    # --- Run scan button ---
     if st.button("🔍 Run scan now"):
-        # Heavy calls only once
-        balances_df = load_tab(SHEET_URL, "balances")
-        positions_df = load_tab(SHEET_URL, "positions")
-        ledger_df    = load_tab(SHEET_URL, "ledger")
-        market       = load_market_data()
-        sigs         = compute_signals(market, positions_df, balances_df, params)
-
-        # Save to session_state
-        st.session_state["signals"]   = sigs
-        st.session_state["balances"]  = balances_df
-        st.session_state["positions"] = positions_df
-        st.session_state["ledger"]    = ledger_df
+        sigs = compute_signals(market, positions_df, balances_df, params)
+        st.session_state["signals"] = sigs   # ✅ persist scan results
         st.success("Signal scan completed!")
 
     # --- Show signals if available ---
     if "signals" in st.session_state:
         sigs = st.session_state["signals"]
 
-        # Guarded access (use fallback load_tab if key missing)
-        balances_df  = st.session_state.get("balances", load_tab(SHEET_URL,"balances"))
-        positions_df = st.session_state.get("positions", load_tab(SHEET_URL,"positions"))
-        ledger_df    = st.session_state.get("ledger",    load_tab(SHEET_URL,"ledger"))
-
+        # 🟢 Enhanced info: show cash, regime, divisor, lot_cash
         regime = sigs['regime']
         div = params["divisor"] if regime=="Bull" else params["divisor_bear"]
         st.info(
-            f"Market Regime: **{regime}** | "
+            f"Market Regime: **{sigs['regime']}** | "
             f"Cash: ₹{sigs.get('cash',0):,.0f} | "
             f"Realized PnL: ₹{sigs.get('realized',0):,.0f} | "
-            f"Size Capital (Cash+Realized): ₹{sigs.get('size_capital',0):,.0f} | "
-            f"Divisor used: {div} | "
+            f"Size Capital (cash+realized): ₹{sigs.get('size_capital', sigs.get('cash',0)+sigs.get('realized',0)):,.0f} | "
+            f"Divisor used: {params['divisor'] if sigs['regime']=='Bull' else params['divisor_bear']} | "
             f"Lot cash per stock: ₹{sigs.get('lot_cash',0):,.0f}"
         )
-
-        selected_trades = []
-
+        
         # --------------- SELL signals ----------------
         st.markdown("### 🚪 SELL signals")
+        selected_sells = []
         if sigs["sells"].empty:
             st.write("No SELL signals today.")
         else:
             for i, row in sigs["sells"].iterrows():
-                sym, shares, px, reason, gain = (
-                    row["symbol"], int(row["shares"]),
-                    float(row["price"]), row["reason"], row["gain_pct"]
+                sym, shares, sugg_price, reason, gain = (
+                    row["symbol"], int(row["shares"]), float(row["price"]), row["reason"], row["gain_pct"]
                 )
                 tick = st.checkbox(f"SELL {sym} ({shares} shares, {reason})", key=f"sell_{i}")
                 if tick:
                     exec_price = st.number_input(
-                        f"Execution SELL price for {sym}",
-                        min_value=0.0, value=px, step=0.1, key=f"sprice_{i}"
+                        f"Enter execution SELL price for {sym}",
+                        min_value=0.0, value=sugg_price, step=0.1, key=f"sell_price_{i}"
                     )
-                    selected_trades.append(dict(
-                        date=today_str(), side="SELL", symbol=sym,
-                        shares=shares, price=exec_price,
-                        fee=params["fee"], reason=reason
-                    ))
+                    st.write(f"Shares: {shares}, Gain: {gain}%")
+                    trade = dict(date=today_str(), side="SELL", symbol=sym,
+                                 shares=shares, price=exec_price,
+                                 fee=params["fee"], reason=reason)
+                    selected_sells.append(trade)
 
         st.markdown("---")
 
         # --------------- NEW BUY signals ---------------
         st.markdown("### 🆕 New BUY signals")
+        selected_buys = []
         if sigs["new_buys"].empty:
             st.write("No new BUY signals today.")
         else:
             for i, row in sigs["new_buys"].iterrows():
-                sym, shares, px = row["symbol"], int(row["shares"]), float(row["price"])
-                tick = st.checkbox(f"BUY {sym} (Qty: {shares} shares)", key=f"buy_{i}")
+                sym, shares, sugg_price = row["symbol"], int(row["shares"]), float(row["price"])
+                tick = st.checkbox(f"BUY {sym} (Qty: {shares} shares, NEW)", key=f"buy_{i}")
                 if tick:
                     exec_price = st.number_input(
-                        f"Execution BUY price for {sym}",
-                        min_value=0.0, value=px, step=0.1, key=f"bprice_{i}"
+                        f"Enter execution BUY price for {sym}",
+                        min_value=0.0, value=sugg_price, step=0.1, key=f"buy_price_{i}"
                     )
-                    selected_trades.append(dict(
-                        date=today_str(), side="BUY", symbol=sym,
-                        shares=shares, price=exec_price,
-                        fee=params["fee"], reason="NEW"
-                    ))
+                    st.write(f"Shares: {shares}")
+                    trade = dict(date=today_str(), side="BUY", symbol=sym,
+                                 shares=shares, price=exec_price,
+                                 fee=params["fee"], reason="NEW")
+                    selected_buys.append(trade)
 
         st.markdown("---")
 
         # --------------- AVERAGING signals ---------------
         st.markdown("### ➕ Averaging signals")
+        selected_avgs = []
         if sigs["averaging"].empty:
             st.write("No averaging signals today.")
         else:
             for i, row in sigs["averaging"].iterrows():
-                sym, shares, px = row["symbol"], int(row["shares"]), float(row["price"])
+                sym, shares, sugg_price = row["symbol"], int(row["shares"]), float(row["price"])
                 tick = st.checkbox(f"AVERAGE {sym} (Qty: {shares} shares)", key=f"avg_{i}")
                 if tick:
                     exec_price = st.number_input(
-                        f"Execution AVG price for {sym}",
-                        min_value=0.0, value=px, step=0.1, key=f"aprice_{i}"
+                        f"Enter execution AVG price for {sym}",
+                        min_value=0.0, value=sugg_price, step=0.1, key=f"avg_price_{i}"
                     )
-                    selected_trades.append(dict(
-                        date=today_str(), side="BUY", symbol=sym,
-                        shares=shares, price=exec_price,
-                        fee=params["fee"], reason="AVERAGE"
-                    ))
+                    st.write(f"Shares: {shares}")
+                    trade = dict(date=today_str(), side="BUY", symbol=sym,
+                                 shares=shares, price=exec_price,
+                                 fee=params["fee"], reason="AVERAGE")
+                    selected_avgs.append(trade)
 
         # --------------- Confirm Selected Trades ---------------
         if st.button("✅ Confirm Selected Trades"):
-            if selected_trades:
-                new_bal, new_pos, new_ledger = apply_trade_rows(
-                    SHEET, selected_trades, balances_df, positions_df, ledger_df
-                )
-                st.success(f"Recorded {len(selected_trades)} trades.")
-
-                # Refresh session_state with new data after trades
-                st.session_state["balances"]  = new_bal
-                st.session_state["positions"] = new_pos
-                st.session_state["ledger"]    = new_ledger
-                st.session_state.pop("signals", None)  # clear signals for fresh scan
+            all_trades = selected_sells + selected_buys + selected_avgs
+            if all_trades:
+                new_bal, new_pos, new_ledger = apply_trade_rows(SHEET, all_trades, balances_df, positions_df, ledger_df)
+                st.success(f"Recorded {len(all_trades)} trades.")
+                st.cache_data.clear()
+                # Clear signals so you don’t accidentally reuse stale data
+                del st.session_state["signals"]
             else:
                 st.warning("No trades selected.")
 
     else:
-        st.info("Click 'Run Scan' to generate signals.")
+        st.info("Click 'Run scan' to generate signals.")
+
+    # =========== Funds Management Section ===========
+    st.markdown("## 💰 Funds Management")
+    with st.form("funds_form"):
+        action = st.selectbox("Action", ["FUND_IN", "FUND_OUT"])
+        amount = st.number_input("Amount (₹)", min_value=1000, step=500)
+        submit_f = st.form_submit_button("Apply")
+        if submit_f:
+            trade = dict(date=today_str(), side=action, symbol="", shares=0,
+                         price=0, fee=0, reason="Funds", amount=amount)
+            new_bal, new_pos, new_ledger = apply_trade_rows(SHEET, [trade], balances_df, positions_df, ledger_df)
+            st.success(f"Funds {action} of ₹{amount} recorded.")
+            st.cache_data.clear()
 
 # ============ TAB 2: My Portfolio ==================
 with tab2:
@@ -1146,5 +1147,6 @@ with tab3:
             ax[0].plot(roll_vol.index, roll_vol.values, color="orange"); ax[0].set_title("Rolling Volatility")
             ax[1].plot(roll_sharpe.index, roll_sharpe.values, color="green"); ax[1].set_title("Rolling Sharpe")
             st.pyplot(fig)
+
 
 
