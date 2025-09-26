@@ -519,21 +519,21 @@ def compute_signals(market, positions_df, balances_df, params):
         ranked = sorted(elig, key=lambda c: dist[c])[:params["bottom_n"]] if elig else []
 
     # ---------------- BUY signals (now in Bull AND Bear, with different divisors) ----------------
-new_buys = []
-for sym in ranked:
-    if sym in positions_df["symbol"].values: 
-        continue
-    px = today_prices.get(sym, np.nan)
-    if pd.notna(px):
-        shares = int(lot_cash // (px * (1 + fee)))
-        if shares > 0:
-            new_buys.append(dict(symbol=sym, price=px, shares=shares, reason="NEW"))
+    new_buys = []
+    for sym in ranked:
+        if sym in positions_df["symbol"].values: 
+            continue
+        px = today_prices.get(sym, np.nan)
+        if pd.notna(px):
+            shares = int(lot_cash // (px * (1 + fee)))
+            if shares > 0:
+                new_buys.append(dict(symbol=sym, price=px, shares=shares, reason="NEW"))
 
-# Cap buys per day
-if len(new_buys) > params["max_new_buys"]:
-    new_buys = new_buys[:params["max_new_buys"]]
+    # Cap buys per day
+    if len(new_buys) > params["max_new_buys"]:
+        new_buys = new_buys[:params["max_new_buys"]]
 
-new_buys_df = pd.DataFrame(new_buys) if new_buys else pd.DataFrame(columns=["symbol","price","shares","reason"])
+    new_buys_df = pd.DataFrame(new_buys) if new_buys else pd.DataFrame(columns=["symbol","price","shares","reason"])
 
     # ---------------- Averaging signals ----------------
     avgs=[]
@@ -779,6 +779,7 @@ with tab3:
             ax.hist(ledger_df["realized_pnl"].dropna(), bins=30, color="blue", alpha=0.6)
             ax.set_title("Realized PnL Distribution")
             st.pyplot(fig)
+
 
 
 
