@@ -362,18 +362,22 @@ def apply_trade_rows(sh, trades, balances_df, positions_df, ledger_df):
     positions, and ledger in Google Sheets. Then clear cache so reads refresh.
     """
 
-    # --- load last saved balances (persistent state) ---
+    # --- load last saved balances ---
     if not balances_df.empty:
         base_cap = float(balances_df.iloc[0]["base_capital"])
         cash = float(balances_df.iloc[0]["cash"])
         realized = float(balances_df.iloc[0]["realized"])
         fees_paid = float(balances_df.iloc[0]["fees_paid"])
     else:
-        # First-time init
         base_cap = DEFAULT_PARAMS["base_capital"]
         cash = base_cap
         realized = 0.0
         fees_paid = 0.0
+
+    st.write("DEBUG Starting Balances -> Cash:", cash,
+             "Base_capital:", base_cap,
+             "Realized:", realized,
+             "Fees:", fees_paid)
 
     for tr in trades:
         sym, side = tr["symbol"], tr["side"]
@@ -420,9 +424,16 @@ def apply_trade_rows(sh, trades, balances_df, positions_df, ledger_df):
                 proceeds_net = proceeds_gross - fee_amt
                 pnl = proceeds_net - shares * avg_cost
 
-                cash += proceeds_net             # ✅ add net sale proceeds to cash
+                cash += proceeds_net
                 realized += pnl
                 fees_paid += fee_amt
+
+                st.write("DEBUG SELL -> Sym:", sym,
+                         "Gross:", proceeds_gross,
+                         "Net:", proceeds_net,
+                         "PnL:", pnl,
+                         "Cash after sell:", cash,
+                         "Realized total:", realized)
 
                 if shares == held_shares:
                     positions_df = positions_df[positions_df["symbol"] != sym]
@@ -436,6 +447,7 @@ def apply_trade_rows(sh, trades, balances_df, positions_df, ledger_df):
 
         elif side == "FUND_IN":
             cash += tr["amount"]
+
         elif side == "FUND_OUT":
             cash -= tr["amount"]
 
@@ -446,20 +458,21 @@ def apply_trade_rows(sh, trades, balances_df, positions_df, ledger_df):
                           holding_days=locals().get("holding_days",0))
         ledger_df = pd.concat([ledger_df, pd.DataFrame([ledger_row])], ignore_index=True)
 
-    # --- Save updated balances persistently ---
+    # --- Save updated balances state ---
     balances_new = pd.DataFrame([{
-        "cash": round(cash,2),            # ✅ running cash (includes proceeds)
-        "base_capital": base_cap,         # keep base constant
+        "cash": round(cash,2),
+        "base_capital": base_cap,
         "realized": round(realized,2),
         "fees_paid": round(fees_paid,2),
         "last_update": today_str(),
     }])
 
+    st.write("DEBUG Writing Balances ->", balances_new)
+
     save_df(sh, "balances", balances_new)
     save_df(sh, "positions", positions_df)
     save_df(sh, "ledger", ledger_df)
 
-    # Clear cache so next reload gets fresh balances
     st.cache_data.clear()
 
     return balances_new, positions_df, ledger_df
@@ -964,6 +977,7 @@ with tab3:
             ax.hist(ledger_df["realized_pnl"].dropna(), bins=30, color="blue", alpha=0.6)
             ax.set_title("Realized PnL Distribution")
             st.pyplot(fig)
+
 
 
 
