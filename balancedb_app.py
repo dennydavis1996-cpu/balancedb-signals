@@ -100,12 +100,23 @@ def ensure_tabs(sh):
 
 def save_df(sh, tab, df):
     """
-    Save DataFrame to a specific tab, overwriting existing.
-    Write operations are not cached.
+    Save DataFrame to a specific tab, overwriting existing content.
+    - For balances: keep exactly ONE row (latest state).
+    - For others: write entire DataFrame.
     """
     ws = sh.worksheet(tab)
     ws.clear()
-    set_with_dataframe(ws, df.reset_index(drop=True))
+
+    # Always reset index before saving
+    df_reset = df.reset_index(drop=True)
+
+    if tab == "balances":
+        # ✅ Only write the last row (one row of truth)
+        if not df_reset.empty:
+            last_row = df_reset.tail(1).reset_index(drop=True)
+            set_with_dataframe(ws, last_row)
+    else:
+        set_with_dataframe(ws, df_reset)
 
 @st.cache_data(ttl=60)
 def load_tab(sheet_url, tab):
@@ -953,6 +964,7 @@ with tab3:
             ax.hist(ledger_df["realized_pnl"].dropna(), bins=30, color="blue", alpha=0.6)
             ax.set_title("Realized PnL Distribution")
             st.pyplot(fig)
+
 
 
 
