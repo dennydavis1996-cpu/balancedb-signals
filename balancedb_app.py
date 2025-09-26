@@ -1027,14 +1027,19 @@ with tab3:
         exp = pd.to_numeric(df_daily["exposure"])
         dd = compute_drawdown(eq)
 
-        # ---------------- 1. Equity vs Benchmark ----------------
+        # ---------------- Equity vs Benchmark ----------------
         st.markdown("### 📈 Equity Curve vs Benchmark (NIFTY 50)")
-        bench_aligned = bench.reindex(eq.index).dropna()
-        df_cmp = pd.DataFrame({
-            "Strategy": eq / eq.iloc[0],
-            "NIFTY50": bench_aligned / bench_aligned.iloc[0]
-        })
-        st.line_chart(df_cmp)
+
+        bench_aligned = bench.reindex(eq.index).ffill()   # ffill fills gaps so we don't drop everything
+        bench_aligned = bench_aligned.dropna()
+
+        if not eq.empty and not bench_aligned.empty:
+            strat_norm = eq / eq.iloc[0]
+            nifty_norm = bench_aligned / bench_aligned.iloc[0]
+            df_cmp = pd.DataFrame({"Strategy": strat_norm, "NIFTY50": nifty_norm})
+            st.line_chart(df_cmp)
+        else:
+            st.warning("⚠️ Not enough overlapping data to compare equity vs NIFTY 50.")
 
         # ---------------- 2. Drawdown curve ----------------
         st.markdown("### 🌊 Drawdown Curve (Underwater)")
@@ -1121,6 +1126,7 @@ with tab3:
             ax[0].plot(roll_vol.index, roll_vol.values, color="orange"); ax[0].set_title("Rolling Volatility")
             ax[1].plot(roll_sharpe.index, roll_sharpe.values, color="green"); ax[1].set_title("Rolling Sharpe")
             st.pyplot(fig)
+
 
 
 
