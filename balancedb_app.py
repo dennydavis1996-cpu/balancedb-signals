@@ -699,45 +699,75 @@ with tab1:
 # ============ TAB 2: My Portfolio ==================
 with tab2:
     st.subheader("Portfolio Snapshot")
-    balances_df = load_tab(SHEET_URL,"balances")
-    positions_df = load_tab(SHEET_URL,"positions")
-    ledger_df = load_tab(SHEET_URL,"ledger")
 
-    st.write("**Balances:**")
-    st.dataframe(balances_df)
+    balances_df = load_tab(SHEET_URL, "balances")
+    positions_df = load_tab(SHEET_URL, "positions")
+    ledger_df = load_tab(SHEET_URL, "ledger")
 
-    # Holdings with market values
-    market = load_market_data()
-    lastrow = market["prices"].iloc[-1]
-    holdings = position_snapshot(positions_df, lastrow)
-    st.write("**Positions (with Unrealized PnL):**")
-    st.dataframe(holdings)
+    if balances_df.empty:
+        st.warning("⚠️ No balances yet. Record a trade or fund injection first.")
+    else:
+        # Extract balances
+        cash = float(balances_df.iloc[0]["cash"])
+        base_cap = float(balances_df.iloc[0]["base_capital"])
+        realized = float(balances_df.iloc[0].get("realized", 0))
+        fees_paid = float(balances_df.iloc[0].get("fees_paid", 0))
 
-    # Equity curve reconstruction
-    df_daily = load_tab(SHEET_URL,"daily_equity")
-    if not df_daily.empty:
-        st.line_chart(df_daily.set_index("date")[["equity","cash","invested"]])
+        # Current holdings
+        market = load_market_data()
+        lastrow = market["prices"].iloc[-1]
+        holdings = position_snapshot(positions_df, lastrow)
+        invested = holdings["market_value"].sum() if not holdings.empty else 0.0
 
-    # Performance metrics computed from equity
-    if not df_daily.empty:
-        eq = pd.to_numeric(df_daily["equity"])
-        eq.index = pd.to_datetime(df_daily["date"])
-        start_val, end_val = eq.iloc[0], eq.iloc[-1]
-        cagr = compute_cagr(start_val,end_val,(eq.index[-1]-eq.index[0]).days)
-        rets = eq.pct_change().dropna()
-        sharpe = compute_sharpe(rets)
-        dd = compute_drawdown(eq).min()
-        st.metric("CAGR", f"{cagr*100:.2f}%")
-        st.metric("Sharpe", f"{sharpe:.2f}")
-        st.metric("Max Drawdown", f"{dd*100:.2f}%")
+        # Total portfolio
+        equity_val = cash + invested
 
-    # Downloads
-    st.markdown("---")
-    st.write("📥 Download Data")
-    st.download_button("Ledger CSV", ledger_df.to_csv(index=False), "ledger.csv")
-    st.download_button("Positions CSV", positions_df.to_csv(index=False), "positions.csv")
-    if not df_daily.empty:
-        st.download_button("Daily Equity CSV", df_daily.to_csv(index=False), "daily_equity.csv")
+        # Display balances summary nicely
+        st.markdown("### 💵 Balances & PnL Summary")
+        col1, col2, col3, col4, col5 = st.columns(5)
+        col1.metric("Cash", f"₹{cash:,.0f}")
+        col2.metric("Invested", f"₹{invested:,.0f}")
+        col3.metric("Equity (Total)", f"₹{equity_val:,.0f}")
+        col4.metric("Realized PnL", f"₹{realized:,.0f}")
+        col5.metric("Fees Paid", f"₹{fees_paid:,.0f}")
+
+        st.caption(f"📌 Realized PnL is added back into Cash, so it increases available buying power just like in the backtest.")
+
+        # Positions (with unrealized PnL)
+        st.markdown("### 📂 Current Holdings")
+        if holdings.empty:
+            st.write("No open positions.")
+        else:
+            st.dataframe(holdings)
+
+        # ==== Equity Curve (if logged daily) ====
+        df_daily = load_tab(SHEET_URL, "daily_equity")
+        if not df_daily.empty:
+            st.markdown("### 📈 Equity Curve (Daily)")
+            st.line_chart(df_daily.set_index("date")[["equity","cash","invested"]])
+
+            # Performance metrics
+            eq = pd.to_numeric(df_daily["equity"])
+            eq.index = pd.to_datetime(df_daily["date"])
+            start_val, end_val = eq.iloc[0], eq.iloc[-1]
+            cagr = compute_cagr(start_val, end_val, (eq.index[-1]-eq.index[0]).days)
+            rets = eq.pct_change().dropna()
+            sharpe = compute_sharpe(rets)
+            dd = compute_drawdown(eq).min()
+
+            st.markdown("### 📊 Performance Metrics")
+            colA, colB, colC = st.columns(3)
+            colA.metric("CAGR", f"{cagr*100:.2f}%")
+            colB.metric("Sharpe", f"{sharpe:.2f}")
+            colC.metric("Max Drawdown", f"{dd*100:.2f}%")
+
+        # ==== Downloads ====
+        st.markdown("---")
+        st.write("📥 Download Data")
+        st.download_button("Ledger CSV", ledger_df.to_csv(index=False), "ledger.csv")
+        st.download_button("Positions CSV", positions_df.to_csv(index=False), "positions.csv")
+        if not df_daily.empty:
+            st.download_button("Daily Equity CSV", df_daily.to_csv(index=False), "daily_equity.csv")
 
 # ============ TAB 3: Reports & Analytics ===========
 with tab3:
@@ -779,6 +809,7 @@ with tab3:
             ax.hist(ledger_df["realized_pnl"].dropna(), bins=30, color="blue", alpha=0.6)
             ax.set_title("Realized PnL Distribution")
             st.pyplot(fig)
+
 
 
 
