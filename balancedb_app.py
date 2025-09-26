@@ -206,7 +206,20 @@ TABS = load_all(SHEET_URL)
 # balancedb_app.py - Part 2
 # Market data functions
 ###########################
-
+def get_live_prices(tickers):
+    """
+    Fetch approx live prices (15 min delayed for NSE) from Yahoo Finance.
+    Returns a Pandas Series {symbol: last_price}
+    """
+    prices = {}
+    for sym in tickers:
+        try:
+            px = yf.Ticker(sym).fast_info["last_price"]
+            if px and px > 0:
+                prices[sym] = px
+        except Exception:
+            continue
+    return pd.Series(prices, dtype=float)
 # Helper to normalize symbols (remove spaces/punct)
 def _clean_symbol_keep_punct(s):
     return re.sub(r'[^A-Za-z0-9\-\&\.]+', '', str(s)).upper()
@@ -565,7 +578,12 @@ def compute_signals(market, positions_df, balances_df, params):
     vols = market["vols"]
     med_turnover = market["med_turnover"]
     today = bench.index[-1]
-    today_prices = prices.loc[today]
+    # Instead of using stale EOD close, fetch live price snapshot from Yahoo
+    today_prices = get_live_prices(market["tickers"])
+
+    # Fallback: if no live data came (empty Series), use yesterday close
+    if today_prices.empty:
+        today_prices = prices.loc[today]
     today_turnover = med_turnover.loc[today]
 
     # --- Current balances ---
@@ -989,6 +1007,7 @@ with tab3:
             ax.hist(ledger_df["realized_pnl"].dropna(), bins=30, color="blue", alpha=0.6)
             ax.set_title("Realized PnL Distribution")
             st.pyplot(fig)
+
 
 
 
