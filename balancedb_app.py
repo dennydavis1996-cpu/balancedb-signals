@@ -979,66 +979,113 @@ with tab3:
 
     df_daily = load_tab(SHEET_URL,"daily_equity")
     ledger_df = load_tab(SHEET_URL,"ledger")
+    bench = load_market_data()["bench"]
+
     if df_daily.empty or ledger_df.empty:
         st.warning("No data yet. Record trades first.")
     else:
+        df_daily["date"] = pd.to_datetime(df_daily["date"])
+        df_daily = df_daily.set_index("date")
         eq = pd.to_numeric(df_daily["equity"])
-        eq.index = pd.to_datetime(df_daily["date"])
+        cash_series = pd.to_numeric(df_daily["cash"])
+        invested_series = pd.to_numeric(df_daily["invested"])
+        exp = pd.to_numeric(df_daily["exposure"])
         dd = compute_drawdown(eq)
 
-        # Drawdown chart
-        fig, ax = plt.subplots(figsize=(8,3))
-        ax.fill_between(dd.index, dd.values,0, color="red", alpha=0.4)
-        ax.set_title("Drawdown curve")
+        # ---------------- 1. Equity vs Benchmark ----------------
+        st.markdown("### 📈 Equity Curve vs Benchmark (NIFTY 50)")
+        bench_aligned = bench.reindex(eq.index).dropna()
+        df_cmp = pd.DataFrame({
+            "Strategy": eq / eq.iloc[0],
+            "NIFTY50": bench_aligned / bench_aligned.iloc[0]
+        })
+        st.line_chart(df_cmp)
+
+        # ---------------- 2. Drawdown curve ----------------
+        st.markdown("### 🌊 Drawdown Curve (Underwater)")
+        fig, ax = plt.subplots(figsize=(9,3))
+        ax.fill_between(dd.index, dd.values, 0, color="red", alpha=0.3)
+        ax.set_title("Strategy Drawdown (%)")
         st.pyplot(fig)
 
-        # Rolling 1Y CAGR
-        if len(eq)>252:
+        # ---------------- 3. Rolling 1Y CAGR ----------------
+        st.markdown("### 🔄 Rolling 1-Year CAGR")
+        if len(eq) > 252:
             roll_cagr = (eq/eq.shift(252))**(1)-1
-            fig, ax = plt.subplots(figsize=(8,3))
-            ax.plot(roll_cagr.index, roll_cagr.values)
-            ax.set_title("Rolling 1Y CAGR")
+            fig, ax = plt.subplots(figsize=(9,3))
+            ax.plot(roll_cagr.index, roll_cagr.values*100)
+            ax.axhline(0, color="grey", linestyle="--", lw=1)
+            ax.set_ylabel("% CAGR")
             st.pyplot(fig)
 
-        # Exposure plot
-        exp = pd.to_numeric(df_daily["exposure"])
-        fig, ax = plt.subplots(figsize=(8,3))
-        ax.plot(df_daily["date"], exp)
-        ax.set_title("Exposure over time")
+        # ---------------- 4. Exposure over time ----------------
+        st.markdown("### 📊 Exposure Over Time")
+        fig, ax = plt.subplots(figsize=(9,3))
+        ax.plot(exp.index, exp.values*100)
+        ax.set_ylabel("% Invested")
         st.pyplot(fig)
 
-        # Histogram of realized PnL
+        # ---------------- 5. Realized PnL Histogram ----------------
+        st.markdown("### 💵 Distribution of Realized Trade PnL")
         if "realized_pnl" in ledger_df.columns and not ledger_df["realized_pnl"].dropna().empty:
-            fig, ax = plt.subplots(figsize=(6,4))
-            ax.hist(ledger_df["realized_pnl"].dropna(), bins=30, color="blue", alpha=0.6)
-            ax.set_title("Realized PnL Distribution")
+            fig, ax = plt.subplots(figsize=(7,4))
+            ax.hist(ledger_df["realized_pnl"].dropna(), bins=40, color="steelblue", alpha=0.7)
+            ax.set_title("Distribution of Realized Trade PnL")
+            ax.set_xlabel("PnL (Rs)")
             st.pyplot(fig)
 
+        # ---------------- 6. Monthly Return Heatmap ----------------
+        st.markdown("### 📆 Monthly Returns Heatmap")
+        rets = eq.pct_change().dropna()
+        monthly = rets.resample('M').apply(lambda x: (1+x).prod()-1)
+        monthly = monthly.to_frame("Return")
+        monthly["Year"] = monthly.index.year
+        monthly["Month"] = monthly.index.strftime("%b")
+        pivot = monthly.pivot(index="Year", columns="Month", values="Return").fillna(0)*100
+        import seaborn as sns
+        fig, ax = plt.subplots(figsize=(10,4))
+        sns.heatmap(pivot, annot=True, fmt=".1f", cmap="RdYlGn", center=0, ax=ax, cbar_kws={'label': '%'})
+        st.pyplot(fig)
 
+        # ---------------- 7. Trade Duration Analysis ----------------
+        st.markdown("### ⏱ Trade Holding Duration")
+        if "holding_days" in ledger_df.columns:
+            holding_days = pd.to_numeric(ledger_df["holding_days"], errors="coerce").dropna()
+            fig, ax = plt.subplots(figsize=(7,4))
+            ax.hist(holding_days, bins=30, color="purple", alpha=0.6)
+            ax.set_title("Distribution of Holding Days")
+            st.pyplot(fig)
 
+        # ---------------- 8. Win Rate & Payoff Ratio ----------------
+        st.markdown("### 🎯 Win Rate & Payoff Stats")
+        trades = ledger_df[ledger_df["side"]=="SELL"].copy()
+        if not trades.empty:
+            wins = trades[trades["realized_pnl"]>0]
+            losses = trades[trades["realized_pnl"]<=0]
+            win_rate = len(wins)/len(trades)*100 if len(trades)>0 else 0
+            avg_win = wins["realized_pnl"].mean() if not wins.empty else 0
+            avg_loss = losses["realized_pnl"].mean() if not losses.empty else 0
+            st.metric("Win Rate", f"{win_rate:.1f}%")
+            st.metric("Avg Win", f"₹{avg_win:,.0f}")
+            st.metric("Avg Loss", f"₹{avg_loss:,.0f}")
 
+        # ---------------- 9. Top 10 Contributors ----------------
+        st.markdown("### 🏆 Top 10 Stock Contributors")
+        if "symbol" in ledger_df.columns:
+            contrib = ledger_df.groupby("symbol")["realized_pnl"].sum().sort_values(ascending=False)
+            top10 = contrib.head(10).to_frame("Total PnL")
+            st.bar_chart(top10)
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+        # ---------------- 10. Rolling Volatility & Sharpe ----------------
+        st.markdown("### 📏 Rolling Volatility & Sharpe Ratio (120d)")
+        if len(eq)>120:
+            rets = eq.pct_change().dropna()
+            roll_vol = rets.rolling(120).std() * (252**0.5)
+            roll_sharpe = rets.rolling(120).mean()/(rets.rolling(120).std()+1e-9) * (252**0.5)
+            fig, ax = plt.subplots(2,1,figsize=(9,6), sharex=True)
+            ax[0].plot(roll_vol.index, roll_vol.values, color="orange"); ax[0].set_title("Rolling Volatility")
+            ax[1].plot(roll_sharpe.index, roll_sharpe.values, color="green"); ax[1].set_title("Rolling Sharpe")
+            st.pyplot(fig)
 
 
 
