@@ -111,8 +111,9 @@ def save_df(sh, tab, df):
 def load_tab(sheet_url, tab):
     """
     Read a tab into a DataFrame.
-    - For 'balances', always include first data row.
-    - For others, just return DataFrame.
+    - For balances: ensure numeric types for cash/realized/fees.
+    - For positions: ensure 'shares' and 'avg_cost' are numeric.
+    - For others: just return DataFrame.
     """
     sh = open_sheet(sheet_url)
     ws = sh.worksheet(tab)
@@ -121,13 +122,26 @@ def load_tab(sheet_url, tab):
     if not values or len(values) <= 1:
         return pd.DataFrame(columns=values[0] if values else [])
 
-    # Convert values[1:] to DataFrame with headers
+    # Convert everything below header row into DataFrame
     df = pd.DataFrame(values[1:], columns=values[0])
 
-    # Cast numeric columns for balances
+    # --- Numeric cleanups ---
     if tab == "balances" and not df.empty:
         for col in ["cash", "base_capital", "realized", "fees_paid"]:
-            df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)
+            df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0.0)
+
+    if tab == "positions" and not df.empty:
+        df["shares"] = pd.to_numeric(df["shares"], errors="coerce").fillna(0).astype(int)
+        df["avg_cost"] = pd.to_numeric(df["avg_cost"], errors="coerce").fillna(0.0)
+
+    if tab == "ledger" and not df.empty:
+        # coerce shares, price, fee, realized_pnl columns
+        if "shares" in df.columns:
+            df["shares"] = pd.to_numeric(df["shares"], errors="coerce").fillna(0).astype(int)
+        for col in ["price","fee","realized_pnl","cash_before","cash_after"]:
+            if col in df.columns:
+                df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0.0)
+
     return df
 
 @st.cache_data(ttl=60)
@@ -867,6 +881,7 @@ with tab3:
             ax.hist(ledger_df["realized_pnl"].dropna(), bins=30, color="blue", alpha=0.6)
             ax.set_title("Realized PnL Distribution")
             st.pyplot(fig)
+
 
 
 
