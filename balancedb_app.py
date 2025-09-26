@@ -493,34 +493,42 @@ def apply_trade_rows(sh, trades, balances_df, positions_df, ledger_df):
 # --------------------------------------------------
 # Valuations: positions with unrealized PnL
 # --------------------------------------------------
-def position_snapshot(positions_df, prices_row):
+def position_snapshot(positions_df, live_prices=None, fallback_prices=None):
     """
-    Join current market prices with positions to compute market value & unrealized PnL.
-    prices_row: Series with ticker->price at latest date
+    Compute market value & unrealized PnL of positions.
+    - live_prices: pd.Series with {symbol: live price}
+    - fallback_prices: daily close row (Series) for fallback
     """
-    if positions_df.empty or prices_row is None:
+    if positions_df.empty:
         return pd.DataFrame()
 
-    # Ensure numeric types
     positions_df = positions_df.copy()
     positions_df["shares"] = pd.to_numeric(positions_df["shares"], errors="coerce").fillna(0).astype(int)
     positions_df["avg_cost"] = pd.to_numeric(positions_df["avg_cost"], errors="coerce").fillna(0.0)
+    if "last_buy" in positions_df.columns:
+        positions_df["last_buy"] = pd.to_numeric(positions_df["last_buy"], errors="coerce").fillna(0.0)
 
     holdings = []
     for _, pos in positions_df.iterrows():
         sym = pos["symbol"]
-        last_price = prices_row.get(sym, np.nan)
 
-        if pd.notna(last_price) and pos["shares"] > 0:
-            mv = pos["shares"] * last_price
-            unr = (last_price - pos["avg_cost"]) * pos["shares"]
-            unr_pct = (last_price / pos["avg_cost"] - 1) * 100 if pos["avg_cost"] > 0 else np.nan
+        # Prefer live price, fallback to last daily close
+        price = None
+        if live_prices is not None and sym in live_prices.index:
+            price = live_prices.get(sym, np.nan)
+        if (price is None or pd.isna(price)) and fallback_prices is not None:
+            price = fallback_prices.get(sym, np.nan)
+
+        if pd.notna(price) and pos["shares"] > 0:
+            mv = pos["shares"] * price
+            unr = (price - pos["avg_cost"]) * pos["shares"]
+            unr_pct = (price / pos["avg_cost"] - 1) * 100 if pos["avg_cost"] > 0 else np.nan
 
             holdings.append(dict(
                 symbol=sym,
                 shares=int(pos["shares"]),
                 avg_cost=round(pos["avg_cost"], 2),
-                last_price=round(last_price, 2),
+                last_price=round(price, 2),
                 market_value=round(mv, 2),
                 unrealized_pnl=round(unr, 2),
                 unrealized_pct=round(unr_pct, 2),
@@ -892,7 +900,14 @@ with tab2:
         # Current holdings
         market = load_market_data()
         lastrow = market["prices"].iloc[-1]
-        holdings = position_snapshot(positions_df, lastrow)
+
+        # 🔄 Fetch live prices
+        live_prices = get_live_prices(market["tickers"])
+
+        # 🔄 Compose holdings with live front, fallback daily
+        holdings = position_snapshot(positions_df,
+                             live_prices=live_prices,
+                             fallback_prices=lastrow)
         invested = holdings["market_value"].sum() if not holdings.empty else 0.0
 
         # Total portfolio
@@ -1007,6 +1022,7 @@ with tab3:
             ax.hist(ledger_df["realized_pnl"].dropna(), bins=30, color="blue", alpha=0.6)
             ax.set_title("Realized PnL Distribution")
             st.pyplot(fig)
+
 
 
 
