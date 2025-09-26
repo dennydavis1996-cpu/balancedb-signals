@@ -725,13 +725,18 @@ with tab2:
         # Display balances summary nicely
         st.markdown("### 💵 Balances & PnL Summary")
         col1, col2, col3, col4, col5 = st.columns(5)
-        col1.metric("Cash", f"₹{cash:,.0f}")
+        col1.metric("Cash (free)", f"₹{cash:,.0f}")
         col2.metric("Invested", f"₹{invested:,.0f}")
-        col3.metric("Equity (Total)", f"₹{equity_val:,.0f}")
-        col4.metric("Realized PnL", f"₹{realized:,.0f}")
-        col5.metric("Fees Paid", f"₹{fees_paid:,.0f}")
 
-        st.caption(f"📌 Realized PnL is added back into Cash, so it increases available buying power just like in the backtest.")
+        # Aggregate unrealized pnl
+        unrealized = holdings["unrealized_pnl"].sum() if not holdings.empty else 0.0
+
+        col3.metric("Equity (Total)", f"₹{equity_val:,.0f}")
+        col4.metric("Realized PnL (cumulative)", f"₹{realized:,.0f}")
+        col5.metric("Unrealized PnL (current)", f"₹{unrealized:,.0f}")
+
+        st.caption("📌 Equity = Cash + Invested. Realized PnL is already included in Cash. "
+           "Unrealized PnL shows gains/losses from open positions.")
 
         # Positions (with unrealized PnL)
         st.markdown("### 📂 Current Holdings")
@@ -809,6 +814,7 @@ with tab3:
             ax.hist(ledger_df["realized_pnl"].dropna(), bins=30, color="blue", alpha=0.6)
             ax.set_title("Realized PnL Distribution")
             st.pyplot(fig)
+
 
 
 
