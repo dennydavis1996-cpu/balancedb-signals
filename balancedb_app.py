@@ -243,11 +243,11 @@ def fetch_index_current(index_name="NIFTY100"):
         "NIFTY100": "ind_nifty100list.csv",
         "NIFTY200": "ind_nifty200list.csv",
     }
-    # Try NSE CSV
+    # Try NSE CSV (NEW URL base: nsearchives.nseindia.com)
     if idx in file_map:
-        url = f"https://archives.nseindia.com/content/indices/{file_map[idx]}"
+        url = f"https://nsearchives.nseindia.com/content/indices/{file_map[idx]}"
         try:
-            r = requests.get(url, headers={"User-Agent":"Mozilla/5.0"}, timeout=20)
+            r = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=20)
             r.raise_for_status()
             df = pd.read_csv(io.StringIO(r.content.decode("utf-8")))
             sym_col = [c for c in df.columns if re.search(r"(symbol|ticker|nse)", c, re.I)][0]
@@ -255,15 +255,17 @@ def fetch_index_current(index_name="NIFTY100"):
             name_col = name_cols[0] if name_cols else None
             df[sym_col] = df[sym_col].apply(_clean_symbol_keep_punct)
             return set(df[sym_col].dropna().astype(str)), (
-                {_norm(n): s for n,s in zip(df[name_col], df[sym_col])} if name_col else {}
+                {_norm(n): s for n, s in zip(df[name_col], df[sym_col])}
+                if name_col else {}
             )
         except Exception as e:
             st.warning(f"⚠️ NSE fetch failed ({e}), falling back to Wikipedia.")
 
+    # Fallback to Wikipedia (in case NSE link fails)
     url_map = {
-        "NIFTY50":"https://en.wikipedia.org/wiki/NIFTY_50",
-        "NIFTY100":"https://en.wikipedia.org/wiki/NIFTY_100",
-        "NIFTY200":"https://en.wikipedia.org/wiki/NIFTY_200",
+        "NIFTY50": "https://en.wikipedia.org/wiki/NIFTY_50",
+        "NIFTY100": "https://en.wikipedia.org/wiki/NIFTY_100",
+        "NIFTY200": "https://en.wikipedia.org/wiki/NIFTY_200",
     }
     url = url_map.get(idx, url_map["NIFTY100"])
     try:
@@ -1147,6 +1149,7 @@ with tab3:
             ax[0].plot(roll_vol.index, roll_vol.values, color="orange"); ax[0].set_title("Rolling Volatility")
             ax[1].plot(roll_sharpe.index, roll_sharpe.values, color="green"); ax[1].set_title("Rolling Sharpe")
             st.pyplot(fig)
+
 
 
 
