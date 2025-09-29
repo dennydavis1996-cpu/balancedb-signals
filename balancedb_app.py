@@ -23,6 +23,12 @@ st.set_page_config(
 
 st.title("Balanced_B Signals — NIFTY100 📊")
 st.caption("Live portfolio manager, Google Sheets backend, full Balanced_B logic")
+st.markdown(
+    """
+    <link rel="manifest" href="manifest.json">
+    """,
+    unsafe_allow_html=True
+)
 
 # ----------------- Constants / Defaults -----------------
 DEFAULT_PARAMS = dict(
@@ -1149,6 +1155,7 @@ with tab3:
             ax[0].plot(roll_vol.index, roll_vol.values, color="orange"); ax[0].set_title("Rolling Volatility")
             ax[1].plot(roll_sharpe.index, roll_sharpe.values, color="green"); ax[1].set_title("Rolling Sharpe")
             st.pyplot(fig)
+
 
 
 
