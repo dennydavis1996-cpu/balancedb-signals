@@ -789,7 +789,7 @@ tab1, tab2, tab3 = st.tabs(["⚡ Run Signals", "📂 My Portfolio", "📑 Report
 # ============ TAB 1: Run Signals ===================
 with tab1:
     st.subheader("Run Balanced_B signal scan")
-
+    selected_trades = []   # always initialize an empty list
     # 🔄 Always reload live balances and positions directly from Google Sheet
     balances_df = load_tab(SHEET_URL, "balances")
     positions_df = load_tab(SHEET_URL, "positions")
@@ -1182,6 +1182,7 @@ with tab3:
             ax[0].plot(roll_vol.index, roll_vol.values, color="orange"); ax[0].set_title("Rolling Volatility")
             ax[1].plot(roll_sharpe.index, roll_sharpe.values, color="green"); ax[1].set_title("Rolling Sharpe")
             st.pyplot(fig)
+
 
 
 
