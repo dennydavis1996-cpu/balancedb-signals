@@ -902,17 +902,19 @@ with tab1:
         st.info("Click 'Run scan' to generate signals.")
 
     # =========== Funds Management Section ===========
-    st.markdown("## 💰 Funds Management")
-    with st.form("funds_form"):
-        action = st.selectbox("Action", ["FUND_IN", "FUND_OUT"])
-        amount = st.number_input("Amount (₹)", min_value=1000, step=500)
-        submit_f = st.form_submit_button("Apply")
-        if submit_f:
-            trade = dict(date=today_str(), side=action, symbol="", shares=0,
-                         price=0, fee=0, reason="Funds", amount=amount)
-            new_bal, new_pos, new_ledger = apply_trade_rows(SHEET, [trade], balances_df, positions_df, ledger_df)
-            st.success(f"Funds {action} of ₹{amount} recorded.")
-            st.cache_data.clear()
+    with st.expander("💰 Funds Management", expanded=False):
+        with st.form("funds_form"):
+            action = st.selectbox("Action", ["FUND_IN", "FUND_OUT"])
+            amount = st.number_input("Amount (₹)", min_value=1000, step=500)
+            submit_f = st.form_submit_button("Apply")
+            if submit_f:
+                trade = dict(date=today_str(), side=action, symbol="", shares=0,
+                             price=0, fee=0, reason="Funds", amount=amount)
+                new_bal, new_pos, new_ledger = apply_trade_rows(
+                    SHEET, [trade], balances_df, positions_df, ledger_df
+                )
+                st.success(f"Funds {action} of ₹{amount} recorded.")
+                st.cache_data.clear()
 
 # ============ TAB 2: My Portfolio ==================
 with tab2:
@@ -1155,6 +1157,7 @@ with tab3:
             ax[0].plot(roll_vol.index, roll_vol.values, color="orange"); ax[0].set_title("Rolling Volatility")
             ax[1].plot(roll_sharpe.index, roll_sharpe.values, color="green"); ax[1].set_title("Rolling Sharpe")
             st.pyplot(fig)
+
 
 
 
