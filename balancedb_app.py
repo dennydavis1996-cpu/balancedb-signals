@@ -790,6 +790,7 @@ tab1, tab2, tab3 = st.tabs(["⚡ Run Signals", "📂 My Portfolio", "📑 Report
 with tab1:
     st.subheader("Run Balanced_B signal scan")
     # 🔄 Always reload live balances and positions directly from Google Sheet
+    selected_trades = []   # always initialize an empty list
     balances_df = load_tab(SHEET_URL, "balances")
     positions_df = load_tab(SHEET_URL, "positions")
     ledger_df    = load_tab(SHEET_URL, "ledger")
@@ -887,18 +888,45 @@ with tab1:
 
         # --------------- Confirm Selected Trades ---------------
         if st.button("✅ Confirm Selected Trades"):
-            all_trades = selected_sells + selected_buys + selected_avgs
-            if all_trades:
-                new_bal, new_pos, new_ledger = apply_trade_rows(SHEET, all_trades, balances_df, positions_df, ledger_df)
-                st.success(f"Recorded {len(all_trades)} trades.")
-                st.cache_data.clear()
-                # Clear signals so you don’t accidentally reuse stale data
-                del st.session_state["signals"]
+            if "signals" in st.session_state:
+                if selected_trades:   # only if non-empty list
+                    st.session_state["pending_trades"] = selected_trades
+                    st.session_state["await_confirm"] = True
+                else:
+                    st.warning("No trades selected.")
             else:
-                st.warning("No trades selected.")
+                st.warning("No signals available. Please run scan first.")
 
-    else:
-        st.info("Click 'Run scan' to generate signals.")
+        # Show staged confirmation if pending
+        if st.session_state.get("await_confirm", False):
+            st.warning("⚠️ Please confirm below. These trades will be recorded permanently:")
+            st.dataframe(pd.DataFrame(st.session_state["pending_trades"]))
+
+            colA, colB = st.columns(2)
+
+            with colA:
+                if st.button("✅ Yes, I am sure. Record trades!"):
+                    new_bal, new_pos, new_ledger = apply_trade_rows(
+                        SHEET, st.session_state["pending_trades"],
+                        balances_df, positions_df, ledger_df
+                    )
+                    st.success(f"Recorded {len(st.session_state['pending_trades'])} trades.")
+
+                    # Update session_state after trade execution
+                    st.session_state["balances"]  = new_bal
+                    st.session_state["positions"] = new_pos
+                    st.session_state["ledger"]    = new_ledger
+
+                    # Clean up staged data
+                    st.session_state.pop("signals", None)
+                    st.session_state.pop("pending_trades", None)
+                    st.session_state.pop("await_confirm", None)
+
+            with colB:
+                if st.button("❌ Cancel"):
+                    st.info("Trade confirmation cancelled. No trades recorded.")
+                    st.session_state.pop("pending_trades", None)
+                    st.session_state.pop("await_confirm", None)
         
     # =========== Funds Management Section ===========
     with st.expander("💰 Funds Management", expanded=False):
@@ -1156,6 +1184,7 @@ with tab3:
             ax[0].plot(roll_vol.index, roll_vol.values, color="orange"); ax[0].set_title("Rolling Volatility")
             ax[1].plot(roll_sharpe.index, roll_sharpe.values, color="green"); ax[1].set_title("Rolling Sharpe")
             st.pyplot(fig)
+
 
 
 
