@@ -631,7 +631,7 @@ def compute_signals(market, positions_df, balances_df, params):
     # --- Current balances ---
     cash = float(balances_df.iloc[0]["cash"]) if not balances_df.empty else params["base_capital"]
     realized = float(balances_df.iloc[0].get("realized", 0)) if not balances_df.empty else 0.0
-
+    base_capital = float(balances_df.iloc[0].get("base_capital", params["base_capital"])) if not balances_df.empty else params["base_capital"]
     # Positions
     if not positions_df.empty:
         positions_df = positions_df.copy()
@@ -657,7 +657,7 @@ def compute_signals(market, positions_df, balances_df, params):
     div_today = params["divisor"] if regime_ok else params["divisor_bear"]
 
     # --- ✅ Lot sizing: cash available + realized profit ---
-    size_capital = cash + realized
+    size_capital = base_capital + realized
     lot_cash = size_capital / div_today
 
     # --- Moving avg and std for z-score ---
@@ -763,6 +763,7 @@ def compute_signals(market, positions_df, balances_df, params):
         lot_cash=lot_cash,
         size_capital=size_capital,   # ✅ show cash+realized used for lot sizing
         cash=cash,
+        base_capital=base_capital,
         realized=realized,
         portfolio_val=portfolio_val
     )
@@ -1156,6 +1157,7 @@ with tab3:
             ax[0].plot(roll_vol.index, roll_vol.values, color="orange"); ax[0].set_title("Rolling Volatility")
             ax[1].plot(roll_sharpe.index, roll_sharpe.values, color="green"); ax[1].set_title("Rolling Sharpe")
             st.pyplot(fig)
+
 
 
 
