@@ -929,6 +929,7 @@ with tab2:
         st.warning("⚠️ No balances yet. Record a trade or fund injection first.")
     else:
         # Extract balances
+        cash = float(balances_df.iloc[0]["cash"])+float(balances_df.iloc[0].get("realized", 0))
         base_cap = float(balances_df.iloc[0]["base_capital"])
         realized = float(balances_df.iloc[0].get("realized", 0))
         fees_paid = float(balances_df.iloc[0].get("fees_paid", 0))
@@ -1157,6 +1158,7 @@ with tab3:
             ax[0].plot(roll_vol.index, roll_vol.values, color="orange"); ax[0].set_title("Rolling Volatility")
             ax[1].plot(roll_sharpe.index, roll_sharpe.values, color="green"); ax[1].set_title("Rolling Sharpe")
             st.pyplot(fig)
+
 
 
 
