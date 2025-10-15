@@ -700,7 +700,22 @@ def compute_signals(market, positions_df, balances_df, params):
                 pd.DataFrame(columns=["symbol", "reason", "shares", "price", "gain_pct"]))
     if len(sells_df) > params["max_sells_per_day"]:
         sells_df = sells_df.sort_values("gain_pct", ascending=False).head(params["max_sells_per_day"])
-
+    if available_cash < min_cash_to_trade:
+    new_buys_df = pd.DataFrame(columns=["symbol", "price", "shares", "reason"])
+    avgs_df = pd.DataFrame(columns=["symbol", "price", "shares", "reason"])
+    return dict(
+    sells=sells_df,
+    new_buys=new_buys_df,
+    averaging=avgs_df,
+    regime="Bull" if regime_ok else "Bear",
+    lot_cash=0.0,
+    size_capital=size_capital,
+    cash=cash,
+    available_cash=available_cash,
+    base_capital=base_capital,
+    realized=realized,
+    portfolio_val=portfolio_val
+    )
     # ---------------- BUY eligibility ----------------
     elig = [c for c in prices.columns
             if pd.notna(ma_today.get(c)) and pd.notna(today_prices.get(c))
@@ -824,10 +839,13 @@ with tab1:
             f"Cash: ₹{sigs.get('cash',0):,.0f} | "
             f"Realized PnL: ₹{sigs.get('realized',0):,.0f} | "
             f"Size Capital (base+realized): ₹{sigs.get('size_capital', sigs.get('base_capital', params['base_capital'])+sigs.get('realized',0)):,.0f} | "
+            f"Available Cash (after buffer): ₹{sigs.get('available_cash', sigs.get('cash', 0)):,.0f} | "
             f"Divisor used: {params['divisor'] if sigs['regime']=='Bull' else params['divisor_bear']} | "
             f"Lot cash per stock: ₹{sigs.get('lot_cash',0):,.0f}"
         )
-        
+        # ADD THIS: friendly reason why BUY/AVERAGE are hidden
+        if sigs.get("available_cash", sigs.get("cash", 0)) < params.get("min_cash_to_trade", 0):
+            st.warning("No BUY/AVERAGE signals because available cash is below min_cash_to_trade.")
         # --------------- SELL signals ----------------
         st.markdown("### 🚪 SELL signals")
         selected_sells = []
@@ -1165,6 +1183,7 @@ with tab3:
             ax[0].plot(roll_vol.index, roll_vol.values, color="orange"); ax[0].set_title("Rolling Volatility")
             ax[1].plot(roll_sharpe.index, roll_sharpe.values, color="green"); ax[1].set_title("Rolling Sharpe")
             st.pyplot(fig)
+
 
 
 
