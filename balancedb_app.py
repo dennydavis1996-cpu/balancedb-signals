@@ -700,9 +700,9 @@ def compute_signals(market, positions_df, balances_df, params):
                 pd.DataFrame(columns=["symbol", "reason", "shares", "price", "gain_pct"]))
     if len(sells_df) > params["max_sells_per_day"]:
         sells_df = sells_df.sort_values("gain_pct", ascending=False).head(params["max_sells_per_day"])
-    if available_cash < min_cash_to_trade:
-    new_buys_df = pd.DataFrame(columns=["symbol", "price", "shares", "reason"])
-    avgs_df = pd.DataFrame(columns=["symbol", "price", "shares", "reason"])
+        if available_cash < min_cash_to_trade:
+        new_buys_df = pd.DataFrame(columns=["symbol", "price", "shares", "reason"])
+        avgs_df = pd.DataFrame(columns=["symbol", "price", "shares", "reason"])
     return dict(
     sells=sells_df,
     new_buys=new_buys_df,
@@ -1183,6 +1183,7 @@ with tab3:
             ax[0].plot(roll_vol.index, roll_vol.values, color="orange"); ax[0].set_title("Rolling Volatility")
             ax[1].plot(roll_sharpe.index, roll_sharpe.values, color="green"); ax[1].set_title("Rolling Sharpe")
             st.pyplot(fig)
+
 
 
 
