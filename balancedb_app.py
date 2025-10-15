@@ -50,6 +50,10 @@ DEFAULT_PARAMS = dict(
     min_turnover_cr=8.0,
     turnover_window=20,
     lookback_days=420,
+    # NEW: cash guards
+    min_cash_to_trade=10000,  # no BUY/AVERAGE if available cash < this
+    cash_buffer=0.0,          # keep this much cash aside, not used for buys
+    avg_first=True,           # optional (not used unless you choose to)
 )
 # ----------------- Google Sheets Integration -----------------
 def _service_account():
@@ -632,6 +636,9 @@ def compute_signals(market, positions_df, balances_df, params):
     cash = float(balances_df.iloc[0]["cash"]) if not balances_df.empty else params["base_capital"]
     realized = float(balances_df.iloc[0].get("realized", 0)) if not balances_df.empty else 0.0
     base_capital = float(balances_df.iloc[0].get("base_capital", params["base_capital"])) if not balances_df.empty else params["base_capital"]
+    cash_buffer = float(params.get("cash_buffer", 0.0))
+    min_cash_to_trade = float(params.get("min_cash_to_trade", 0.0))
+    available_cash = max(0.0, cash - cash_buffer)
     # Positions
     if not positions_df.empty:
         positions_df = positions_df.copy()
@@ -658,7 +665,7 @@ def compute_signals(market, positions_df, balances_df, params):
 
     # --- ✅ Lot sizing: cash available + realized profit ---
     size_capital = base_capital + realized
-    lot_cash = size_capital / div_today
+    lot_cash = min(available_cash, size_capital / div_today)
 
     # --- Moving avg and std for z-score ---
     ma = prices.rolling(params["ma"], min_periods=params["ma"]).mean()
@@ -1158,6 +1165,7 @@ with tab3:
             ax[0].plot(roll_vol.index, roll_vol.values, color="orange"); ax[0].set_title("Rolling Volatility")
             ax[1].plot(roll_sharpe.index, roll_sharpe.values, color="green"); ax[1].set_title("Rolling Sharpe")
             st.pyplot(fig)
+
 
 
 
