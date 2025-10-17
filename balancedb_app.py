@@ -54,6 +54,10 @@ DEFAULT_PARAMS = dict(
     min_cash_to_trade=10000,  # no BUY/AVERAGE if available cash < this
     cash_buffer=0.0,          # keep this much cash aside, not used for buys
     avg_first=True,           # optional (not used unless you choose to)
+        # NEW: micro buy when lot size not met
+    allow_micro_buys=True,            # use leftover cash to buy at least 1 share
+    micro_min_qty=1,                  # minimum shares in micro mode
+    micro_priority="AVERAGE_THEN_NEW" # or "NEW_THEN_AVERAGE"
 )
 # ----------------- Google Sheets Integration -----------------
 def _service_account():
@@ -613,21 +617,19 @@ def compute_xirr(cashflows):
 
 def compute_signals(market, positions_df, balances_df, params):
     """
-    Compute Balanced_B signals with corrected lot sizing:
-    - Lot size = (cash available + realized PnL) / divisor
-    - Ensures Bull/Bear divisor logic
-    - Returns useful diagnostic fields
+    Compute Balanced_B signals with corrected lot sizing and micro-buy fallback:
+    - Lot size = min(available_cash, (base_capital + realized) / divisor(divisor_bear))
+    - If lot size too small or min_cash_to_trade blocks normal sizing,
+      optionally place a micro buy (1 share) in the best candidate.
     """
 
     bench = market["bench"]
     prices = market["prices"]
-    vols = market["vols"]
     med_turnover = market["med_turnover"]
     today = bench.index[-1]
-    # Instead of using stale EOD close, fetch live price snapshot from Yahoo
-    today_prices = get_live_prices(market["tickers"])
 
-    # Fallback: if no live data came (empty Series), use yesterday close
+    # Live snapshot; fallback to last close row
+    today_prices = get_live_prices(market["tickers"])
     if today_prices.empty:
         today_prices = prices.loc[today]
     today_turnover = med_turnover.loc[today]
@@ -638,8 +640,10 @@ def compute_signals(market, positions_df, balances_df, params):
     base_capital = float(balances_df.iloc[0].get("base_capital", params["base_capital"])) if not balances_df.empty else params["base_capital"]
     cash_buffer = float(params.get("cash_buffer", 0.0))
     min_cash_to_trade = float(params.get("min_cash_to_trade", 0.0))
+
     available_cash = max(0.0, cash - cash_buffer)
-    # Positions
+
+    # Positions cleanup
     if not positions_df.empty:
         positions_df = positions_df.copy()
         positions_df["shares"] = pd.to_numeric(positions_df["shares"], errors="coerce").fillna(0).astype(int)
@@ -647,14 +651,13 @@ def compute_signals(market, positions_df, balances_df, params):
         if "last_buy" in positions_df.columns:
             positions_df["last_buy"] = pd.to_numeric(positions_df["last_buy"], errors="coerce").fillna(0.0)
 
-    # Invested (mark-to-market of current holdings, just for equity calc)
+    # Invested valuation (for portfolio value display)
     if not positions_df.empty:
         merged = positions_df.merge(today_prices.to_frame("price"),
                                     left_on="symbol", right_index=True, how="left")
         invested_val = (merged["price"] * merged["shares"]).sum()
     else:
         invested_val = 0.0
-
     portfolio_val = cash + invested_val
 
     # --- Regime detection ---
@@ -663,7 +666,7 @@ def compute_signals(market, positions_df, balances_df, params):
     regime_ok = bool(bench.iloc[-1] >= bench_ma.iloc[-1] * (1 + params["regime_buffer"]))
     div_today = params["divisor"] if regime_ok else params["divisor_bear"]
 
-    # --- ✅ Lot sizing: cash available + realized profit ---
+    # --- Lot sizing capital ---
     size_capital = base_capital + realized
     lot_cash = min(available_cash, size_capital / div_today)
 
@@ -674,7 +677,7 @@ def compute_signals(market, positions_df, balances_df, params):
 
     # ---------------- SELL signals ----------------
     sell_signals = []
-    for _, pos in positions_df.iterrows():
+    for _, pos in (positions_df if not positions_df.empty else pd.DataFrame()).iterrows():
         sym = pos["symbol"]
         shares = int(pos["shares"])
         buy_price = float(pos["avg_cost"])
@@ -686,13 +689,13 @@ def compute_signals(market, positions_df, balances_df, params):
         # Take profit
         if ret >= params["take_profit"]:
             sell_signals.append(dict(symbol=sym, reason="TP",
-                                     shares=shares, price=px,
+                                     shares=shares, price=float(px),
                                      gain_pct=round(ret * 100, 2)))
         # Time stop
         age = (today - pd.to_datetime(pos["open_date"])).days
         if age >= params["time_stop_days"]:
             sell_signals.append(dict(symbol=sym, reason="TIME_STOP",
-                                     shares=shares, price=px,
+                                     shares=shares, price=float(px),
                                      gain_pct=round(ret * 100, 2)))
 
     sells_df = (pd.DataFrame(sell_signals)
@@ -700,23 +703,11 @@ def compute_signals(market, positions_df, balances_df, params):
                 pd.DataFrame(columns=["symbol", "reason", "shares", "price", "gain_pct"]))
     if len(sells_df) > params["max_sells_per_day"]:
         sells_df = sells_df.sort_values("gain_pct", ascending=False).head(params["max_sells_per_day"])
-    if available_cash < min_cash_to_trade:
-        new_buys_df = pd.DataFrame(columns=["symbol", "price", "shares", "reason"])
-        avgs_df = pd.DataFrame(columns=["symbol", "price", "shares", "reason"])
-    return dict(
-    sells=sells_df,
-    new_buys=new_buys_df,
-    averaging=avgs_df,
-    regime="Bull" if regime_ok else "Bear",
-    lot_cash=0.0,
-    size_capital=size_capital,
-    cash=cash,
-    available_cash=available_cash,
-    base_capital=base_capital,
-    realized=realized,
-    portfolio_val=portfolio_val
-    )
-    # ---------------- BUY eligibility ----------------
+
+    # Cash guard flag (we won't early-return; we may still micro-buy)
+    low_cash_guard = available_cash < min_cash_to_trade
+
+    # ---------------- BUY eligibility (ranking) ----------------
     elig = [c for c in prices.columns
             if pd.notna(ma_today.get(c)) and pd.notna(today_prices.get(c))
             and today_prices[c] < ma_today[c]
@@ -725,57 +716,117 @@ def compute_signals(market, positions_df, balances_df, params):
     if params.get("use_zscore", True):
         zmap = {c: (today_prices[c] - ma_today[c]) / std_today[c]
                 for c in elig if pd.notna(std_today.get(c)) and std_today[c] > 0}
-        ranked = sorted(zmap, key=zmap.get)[:params["bottom_n"]]
+        ranked = sorted(zmap, key=zmap.get)[:params["bottom_n"]] if zmap else []
     else:
-        dist = today_prices / ma_today - 1
+        dist = (today_prices / ma_today - 1)
         ranked = sorted(elig, key=lambda c: dist[c])[:params["bottom_n"]] if elig else []
 
-    # ---------------- NEW BUY signals ----------------
+    # For quick membership checks
+    existing = set(positions_df["symbol"].values) if not positions_df.empty else set()
+
+    # ---------------- NEW BUY signals (normal mode) ----------------
+    fee = params["fee"]
     new_buys = []
     for sym in ranked:
-        if sym in positions_df["symbol"].values:
+        if sym in existing:
             continue
         px = today_prices.get(sym, np.nan)
-        if pd.notna(px):
-            shares = int(lot_cash // (px * (1 + params["fee"])))
-            if shares > 0:
-                new_buys.append(dict(symbol=sym, price=px, shares=shares, reason="NEW"))
-
+        if pd.isna(px):
+            continue
+        cps = px * (1 + fee)
+        shares = int(lot_cash // cps)
+        if (not low_cash_guard) and shares > 0:
+            new_buys.append(dict(symbol=sym, price=float(px), shares=int(shares), reason="NEW"))
     if len(new_buys) > params["max_new_buys"]:
         new_buys = new_buys[:params["max_new_buys"]]
-
     new_buys_df = (pd.DataFrame(new_buys)
                    if new_buys else
                    pd.DataFrame(columns=["symbol", "price", "shares", "reason"]))
 
-    # ---------------- AVERAGING signals ----------------
+    # ---------------- AVERAGING eligibility (for both normal + micro ranking) ----------------
+    avg_candidates = []  # list of dicts: {symbol, px, score}
     avgs = []
-    if regime_ok:  # Bull regime
+
+    if not positions_df.empty:
         for _, pos in positions_df.iterrows():
-            sym = pos["symbol"]; last_buy = pos["last_buy"]
+            sym = pos["symbol"]; last_buy = float(pos["last_buy"])
             px = today_prices.get(sym, np.nan)
-            if pd.notna(px) and px <= last_buy * (1 - params["avg_dd"]):
-                if today_turnover.get(sym, 0) >= params["min_turnover_cr"]:
-                    shares = int(lot_cash // (px * (1 + params["fee"])))
-                    if shares > 0:
-                        avgs.append(dict(symbol=sym, price=px, shares=shares, reason="AVERAGE"))
-    else:  # Bear regime
-        for _, pos in positions_df.iterrows():
-            sym = pos["symbol"]; last_buy = pos["last_buy"]
-            px = today_prices.get(sym, np.nan)
-            if pd.isna(px): continue
-            m, s = ma_today.get(sym), std_today.get(sym)
-            if pd.isna(m) or pd.isna(s) or s <= 0: continue
-            z = (px - m) / s
-            if z <= params["avg_in_bear_z_thresh"] and px <= last_buy * (1 - params["avg_dd"]):
-                if today_turnover.get(sym, 0) >= params["min_turnover_cr"]:
-                    shares = int(lot_cash // (px * (1 + params["fee"])))
-                    if shares > 0:
-                        avgs.append(dict(symbol=sym, price=px, shares=shares, reason="AVERAGE"))
+            if pd.isna(px) or last_buy <= 0:
+                continue
+            if today_turnover.get(sym, 0) < params["min_turnover_cr"]:
+                continue
+
+            if regime_ok:
+                # Bull: trigger on drawdown from last buy
+                if px <= last_buy * (1 - params["avg_dd"]):
+                    # urgency: deeper drawdown first
+                    score = (last_buy - px) / last_buy
+                    avg_candidates.append(dict(symbol=sym, px=float(px), score=float(score)))
+            else:
+                # Bear: need both zscore + drawdown
+                m, s = ma_today.get(sym), std_today.get(sym)
+                if pd.isna(m) or pd.isna(s) or s <= 0:
+                    continue
+                z = (px - m) / s
+                if z <= params["avg_in_bear_z_thresh"] and px <= last_buy * (1 - params["avg_dd"]):
+                    # urgency: more negative z first
+                    score = z
+                    avg_candidates.append(dict(symbol=sym, px=float(px), score=float(score)))
+
+    # Normal averaging (lot-sized)
+    if avg_candidates:
+        # Sort candidates for normal sizing (bull: deeper dd first; bear: lower z first)
+        avg_sorted = sorted(avg_candidates, key=lambda d: (-d["score"]) if regime_ok else (d["score"]))
+        for c in avg_sorted:
+            cps = c["px"] * (1 + fee)
+            shares = int(lot_cash // cps)
+            if (not low_cash_guard) and shares > 0:
+                avgs.append(dict(symbol=c["symbol"], price=c["px"], shares=int(shares), reason="AVERAGE"))
 
     avgs_df = (pd.DataFrame(avgs)
                if avgs else
                pd.DataFrame(columns=["symbol", "price", "shares", "reason"]))
+
+    # ---------------- Micro-buy fallback (minimum quantity) ----------------
+    # If no normal buys/averages are possible (or blocked by min_cash_to_trade),
+    # try placing a single 1-share order on the best affordable candidate.
+    if params.get("allow_micro_buys", True) and new_buys_df.empty and avgs_df.empty and available_cash > 0:
+        # Build ordered lists for selection
+        avg_sorted = sorted(avg_candidates, key=lambda d: (-d["score"]) if regime_ok else (d["score"]))
+        new_sorted = [{"symbol": s, "px": float(today_prices.get(s, np.nan))}
+                      for s in ranked if pd.notna(today_prices.get(s)) and s not in existing]
+        priority = str(params.get("micro_priority", "AVERAGE_THEN_NEW")).upper()
+        min_qty = max(1, int(params.get("micro_min_qty", 1)))
+
+        def first_affordable(cands):
+            for c in cands:
+                if available_cash >= c["px"] * (1 + fee):
+                    return c
+            return None
+
+        candidate = None
+        reason = None
+        if priority.startswith("NEW"):
+            candidate = first_affordable(new_sorted)
+            reason = "NEW" if candidate else None
+            if candidate is None:
+                candidate = first_affordable(avg_sorted)
+                reason = "AVERAGE" if candidate else None
+        else:
+            candidate = first_affordable(avg_sorted)
+            reason = "AVERAGE" if candidate else None
+            if candidate is None:
+                candidate = first_affordable(new_sorted)
+                reason = "NEW" if candidate else None
+
+        if candidate is not None:
+            max_qty = int(available_cash // (candidate["px"] * (1 + fee)))
+            qty = max(min_qty, max_qty)
+            row = dict(symbol=candidate["symbol"], price=float(candidate["px"]), shares=int(qty), reason=reason)
+            if reason == "NEW":
+                new_buys_df = pd.DataFrame([row])
+            else:
+                avgs_df = pd.DataFrame([row])
 
     return dict(
         sells=sells_df,
@@ -783,8 +834,9 @@ def compute_signals(market, positions_df, balances_df, params):
         averaging=avgs_df,
         regime="Bull" if regime_ok else "Bear",
         lot_cash=lot_cash,
-        size_capital=size_capital,   # ✅ show cash+realized used for lot sizing
+        size_capital=size_capital,
         cash=cash,
+        available_cash=available_cash,
         base_capital=base_capital,
         realized=realized,
         portfolio_val=portfolio_val
@@ -845,7 +897,10 @@ with tab1:
         )
         # ADD THIS: friendly reason why BUY/AVERAGE are hidden
         if sigs.get("available_cash", sigs.get("cash", 0)) < params.get("min_cash_to_trade", 0):
-            st.warning("No BUY/AVERAGE signals because available cash is below min_cash_to_trade.")
+            if sigs["new_buys"].empty and sigs["averaging"].empty:
+                st.warning("No BUY/AVERAGE signals because available cash is below min_cash_to_trade.")
+            else:
+                st.info("Micro-buy mode: lot size not met, showing minimum-quantity opportunities.")
         # --------------- SELL signals ----------------
         st.markdown("### 🚪 SELL signals")
         selected_sells = []
@@ -1183,6 +1238,7 @@ with tab3:
             ax[0].plot(roll_vol.index, roll_vol.values, color="orange"); ax[0].set_title("Rolling Volatility")
             ax[1].plot(roll_sharpe.index, roll_sharpe.values, color="green"); ax[1].set_title("Rolling Sharpe")
             st.pyplot(fig)
+
 
 
 
